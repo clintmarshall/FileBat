@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single filesystem entry (file, folder, symlink, or drive).
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub name: String,
     pub path: String,
@@ -39,6 +40,7 @@ impl EntryType {
 
 /// A mounted volume / drive visible to the user.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Volume {
     pub name: String,
     pub path: String,
@@ -58,6 +60,7 @@ pub fn sort_entries(entries: &mut [Entry]) {
 
 /// Result of scanning a single folder for disk usage.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderUsage {
     pub path: String,
     pub size: u64,
@@ -68,6 +71,7 @@ pub struct FolderUsage {
 
 /// A group of files confirmed to be identical.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct DuplicateGroup {
     pub hash: String,
     pub size_each: u64,
@@ -77,6 +81,7 @@ pub struct DuplicateGroup {
 
 /// A point-in-time snapshot of disk usage, stored in SQLite.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageSnapshot {
     pub id: i64,
     pub path: String,
@@ -89,6 +94,7 @@ pub struct UsageSnapshot {
 
 /// Progress update emitted during a long-running scan.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanProgress {
     pub scan_id: String,
     pub percentage: f64,
@@ -97,6 +103,7 @@ pub struct ScanProgress {
 
 /// A chunk of results emitted incrementally during a scan.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanChunk {
     pub scan_id: String,
     #[serde(rename = "all")]
@@ -117,6 +124,7 @@ pub enum ScanChunkData {
 
 /// Error emitted when a scan fails.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanError {
     pub scan_id: String,
     pub message: String,
@@ -124,6 +132,7 @@ pub struct ScanError {
 
 /// Final summary emitted when a scan completes.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanComplete {
     pub scan_id: String,
     pub total_items: u64,
@@ -211,7 +220,7 @@ mod tests {
     fn entry_serializes_to_frontend_format() {
         let e = entry("test.txt", EntryType::File, 42);
         let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains("\"entry_type\":\"File\""));
+        assert!(json.contains("\"entryType\":\"File\""));
         assert!(json.contains("\"name\":\"test.txt\""));
     }
 
@@ -227,6 +236,8 @@ mod tests {
         let json = serde_json::to_string(&usage).unwrap();
         assert!(json.contains("\"path\":\"/test\""));
         assert!(json.contains("\"size\":1024"));
+        assert!(json.contains("\"fileCount\":5"));
+        assert!(json.contains("\"folderCount\":2"));
     }
 
     #[test]

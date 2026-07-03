@@ -58,9 +58,9 @@ let analyticsVisible = false;
 let activeScanId: string | null = null;
 let currentTab: string = 'usage';
 let scanResults: {
-    usage: Array<{ path: string; size: number; file_count: number; folder_count: number }>;
+    usage: Array<{ path: string; size: number; fileCount: number; folderCount: number }>;
     largeFiles: Entry[];
-    duplicates: Array<{ hash: string; size_each: number; files: string[]; wasted_space: number }>;
+    duplicates: Array<{ hash: string; sizeEach: number; files: string[]; wastedSpace: number }>;
 } = { usage: [], largeFiles: [], duplicates: [] };
 
 function getSelectedPaths(): string[] {
@@ -744,13 +744,13 @@ async function startScan() {
         let scanId: string;
 
         if (currentTab === 'usage') {
-            scanId = await invoke('start_scan_usage', { path, max_depth: 2 });
+            scanId = await invoke('start_scan_usage', { path, maxDepth: 2 });
             clearTabResults('usage-results', 'Scanning disk usage...');
         } else if (currentTab === 'large-files') {
             scanId = await invoke('start_find_large_files', {
                 path,
-                min_size: 100 * 1024 * 1024, // 100MB default
-                max_results: 100,
+                minSize: 100 * 1024 * 1024, // 100MB default
+                maxResults: 100,
             });
             clearTabResults('large-files-results', 'Finding large files...');
         } else if (currentTab === 'duplicates') {
@@ -798,8 +798,8 @@ async function saveSnapshot() {
     try {
         const topFolders = JSON.stringify(scanResults.usage.slice(0, 10));
         const totalSize = scanResults.usage.reduce((sum, u) => sum + u.size, 0);
-        const totalFiles = scanResults.usage.reduce((sum, u) => sum + u.file_count, 0);
-        const totalFolders = scanResults.usage.reduce((sum, u) => sum + u.folder_count, 0);
+        const totalFiles = scanResults.usage.reduce((sum, u) => sum + u.fileCount, 0);
+        const totalFolders = scanResults.usage.reduce((sum, u) => sum + u.folderCount, 0);
 
         await invoke('snapshot_usage', {
             path: scanPathInput.value,
@@ -825,10 +825,10 @@ async function loadHistory() {
         const history: Array<{
             id: number;
             path: string;
-            total_size: number;
-            file_count: number;
-            folder_count: number;
-            scanned_at: string;
+            totalSize: number;
+            fileCount: number;
+            folderCount: number;
+            scannedAt: string;
         }> = await invoke('usage_history', { path, start, end });
 
         const container = document.getElementById('history-results')!;
@@ -843,9 +843,9 @@ async function loadHistory() {
             html += `<tr>
                 <td>${formatDate(snap.scanned_at)}</td>
                 <td>${snap.path}</td>
-                <td>${formatSize(snap.total_size)}</td>
-                <td>${snap.file_count.toLocaleString()}</td>
-                <td>${snap.folder_count.toLocaleString()}</td>
+                <td>${formatSize(snap.totalSize)}</td>
+                <td>${snap.fileCount.toLocaleString()}</td>
+                <td>${snap.folderCount.toLocaleString()}</td>
             </tr>`;
         }
         html += '</table>';
@@ -889,10 +889,10 @@ function setupScanListeners() {
 
     listen('scan:complete', (event) => {
         console.log('scan:complete received', event.payload);
-        const data = event.payload as { total_items: number; total_size: number; duration_ms: number };
+        const data = event.payload as { totalItems: number; totalSize: number; durationMs: number };
         resetScanUI();
         analyticsSummary.classList.remove('hidden');
-        summaryText.textContent = `Scan complete: ${data.total_items.toLocaleString()} items · ${formatSize(data.total_size)} · ${(data.duration_ms / 1000).toFixed(1)}s`;
+        summaryText.textContent = `Scan complete: ${data.totalItems.toLocaleString()} items · ${formatSize(data.totalSize)} · ${(data.durationMs / 1000).toFixed(1)}s`;
         statusInfoEl.textContent = summaryText.textContent;
     }).then(() => console.log('scan:complete listener registered'))
       .catch(err => console.error('Failed to register scan:complete listener:', err));
@@ -928,8 +928,8 @@ function renderUsageResults() {
                 ${formatSize(usage.size)}
                 <span class="size-bar" style="width: ${barWidth}px;"></span>
             </td>
-            <td>${usage.file_count.toLocaleString()}</td>
-            <td>${usage.folder_count.toLocaleString()}</td>
+            <td>${usage.fileCount.toLocaleString()}</td>
+            <td>${usage.folderCount.toLocaleString()}</td>
         </tr>`;
     }
     html += '</table>';
@@ -961,16 +961,16 @@ function renderDuplicatesResults() {
     const container = document.getElementById('duplicates-results')!;
     if (scanResults.duplicates.length === 0) return;
 
-    let totalWasted = scanResults.duplicates.reduce((sum, g) => sum + g.wasted_space, 0);
+    let totalWasted = scanResults.duplicates.reduce((sum, g) => sum + g.wastedSpace, 0);
     let html = `<div style="padding: 8px; font-weight: 500;">Found ${scanResults.duplicates.length} duplicate groups · ${formatSize(totalWasted)} wasted</div>`;
     html += '<table class="analytics-table">';
     html += '<tr><th>Files</th><th>Size Each</th><th>Count</th><th>Wasted</th></tr>';
     for (const group of scanResults.duplicates) {
         html += `<tr>
             <td>${group.files.map(f => f.split('\\').pop()).join(', ')}</td>
-            <td>${formatSize(group.size_each)}</td>
+            <td>${formatSize(group.sizeEach)}</td>
             <td>${group.files.length}</td>
-            <td>${formatSize(group.wasted_space)}</td>
+            <td>${formatSize(group.wastedSpace)}</td>
         </tr>`;
     }
     html += '</table>';

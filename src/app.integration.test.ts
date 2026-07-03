@@ -116,7 +116,7 @@ describe('Analytics — Disk Usage Scan', () => {
     const { invoke } = await import('@tauri-apps/api/core');
     expect(invoke).toHaveBeenCalledWith(
       'start_scan_usage',
-      expect.objectContaining({ path: 'C:\\', max_depth: 2 }),
+      expect.objectContaining({ path: 'C:\\', maxDepth: 2 }),
     );
 
     expect(document.getElementById('analytics-progress')!.classList.contains('hidden')).toBe(false);
@@ -133,7 +133,7 @@ describe('Analytics — Disk Usage Scan', () => {
 
     emitEvent('scan:chunk', {
       type: 'folder_usage',
-      usage: { path: 'C:\\Windows', size: 5368709120, file_count: 12345, folder_count: 890 },
+      usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
     });
     await flushPromises();
 
@@ -151,7 +151,7 @@ describe('Analytics — Disk Usage Scan', () => {
     await flushPromises();
     expect(document.getElementById('analytics-progress')!.classList.contains('hidden')).toBe(false);
 
-    emitEvent('scan:complete', { total_items: 5000, total_size: 10737418240, duration_ms: 3500 });
+    emitEvent('scan:complete', { totalItems: 5000, totalSize: 10737418240, durationMs: 3500 });
     await flushPromises();
 
     expect(document.getElementById('analytics-progress')!.classList.contains('hidden')).toBe(true);
@@ -238,23 +238,23 @@ describe('Tauri IPC — Argument Casing', () => {
     resetTauriMocks();
   });
 
-  it('start_scan_usage → max_depth (not MaxDepth)', async () => {
+  it('start_scan_usage → maxDepth (Tauri 2 camelCase)', async () => {
     await bootAndScan();
     const args = await getInvokeCall('start_scan_usage');
-    expect(args).toHaveProperty('max_depth');
-    expect(args).not.toHaveProperty('MaxDepth');
+    expect(args).toHaveProperty('maxDepth');
+    expect(args).not.toHaveProperty('max_depth');
   });
 
-  it('start_find_large_files → min_size, max_results', async () => {
+  it('start_find_large_files → minSize, maxResults (Tauri 2 camelCase)', async () => {
     await bootAndScan('large-files');
     const args = await getInvokeCall('start_find_large_files');
-    expect(args).toHaveProperty('min_size');
-    expect(args).toHaveProperty('max_results');
-    expect(args).not.toHaveProperty('MinSize');
-    expect(args).not.toHaveProperty('MaxResults');
+    expect(args).toHaveProperty('minSize');
+    expect(args).toHaveProperty('maxResults');
+    expect(args).not.toHaveProperty('min_size');
+    expect(args).not.toHaveProperty('max_results');
   });
 
-  it('start_find_duplicates → path (snake_case)', async () => {
+  it('start_find_duplicates → path (single word, no casing issue)', async () => {
     await bootAndScan('duplicates');
     const args = await getInvokeCall('start_find_duplicates');
     expect(args).toHaveProperty('path');
