@@ -32,6 +32,9 @@ desktop.ini
 # Scratch files
 refImplementation.rs
 
+# Accidental nested build output
+src/src-tauri/
+
 # Logs
 *.log
 npm-debug.log*

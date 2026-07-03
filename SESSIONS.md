@@ -1,5 +1,38 @@
 # Session Log
 
+## 2026-07-03 — Tauri IPC camelCase Standardisation
+
+**Goal:** Eliminate snake_case/camelCase confusion between Tauri invoke args and event payloads
+
+### Architecture
+- Added `#[serde(rename_all = "camelCase")]` to all 9 Tauri boundary structs:
+  `Entry`, `Volume`, `FolderUsage`, `DuplicateGroup`, `UsageSnapshot`,
+  `ScanProgress`, `ScanChunk`, `ScanError`, `ScanComplete`
+- Frontend now uses camelCase everywhere (`fileCount`, `totalSize`, `maxDepth`, etc.)
+- One convention for all Tauri IPC — no more mixing snake_case and camelCase
+
+### Tests
+- Updated Rust serialization tests to expect camelCase keys
+- Updated integration tests to use camelCase invoke args (`maxDepth`, `minSize`, `maxResults`)
+- Updated integration test event payloads (`fileCount`, `totalItems`, `durationMs`)
+
+### E2E
+- Ran e2e tests — drives, analytics toggle, scan path all pass
+- Scan starts correctly (camelCase args work) but `scan:complete` event never arrives
+- Known issue: spawn_blocking/channel event emission (separate from camelCase)
+
+**Decisions:**
+- `#[serde(rename_all = "camelCase")]` is the standard for all structs crossing the Tauri boundary
+- New structs added in future should follow this pattern automatically
+
+**Left for next time:**
+- Fix scan events not reaching frontend (spawn_blocking/channel issue)
+- Run e2e scan test to completion
+
+**Files touched:** `src-tauri/src/domain/models.rs`, `src/app.ts`, `src/app.integration.test.ts`
+
+---
+
 ## 2026-07-03 — Fallow Health Sweep
 
 **Goal:** Run fallow, remove noise, refactor complexity, set up git
