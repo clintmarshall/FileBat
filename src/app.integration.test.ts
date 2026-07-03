@@ -132,8 +132,11 @@ describe('Analytics — Disk Usage Scan', () => {
     await flushPromises();
 
     emitEvent('scan:chunk', {
-      type: 'folder_usage',
-      usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
+      scanId: 'test_scan',
+      data: {
+        type: 'folder_usage',
+        usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
+      },
     });
     await flushPromises();
 

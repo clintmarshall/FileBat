@@ -457,10 +457,12 @@ html, body {
 
 .analytics-tab-content {
     display: none;
+    height: 100%;
 }
 
 .analytics-tab-content.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
 }
 
 #analytics-summary {
@@ -499,6 +501,14 @@ html, body {
 
 .analytics-table tr:hover {
     background: var(--bg-hover);
+}
+
+#usage-results,
+#large-files-results,
+#duplicates-results,
+#history-results {
+    flex: 1;
+    overflow-y: auto;
 }
 
 .size-bar {

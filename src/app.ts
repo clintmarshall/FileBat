@@ -741,21 +741,31 @@ async function startScan() {
     analyticsSummary.classList.add('hidden');
 
     try {
-        let scanId: string;
+        // Clear results BEFORE the invoke — the command awaits the full scan,
+        // so chunk events arrive DURING the invoke and render the table.
+        // If we clear AFTER, we'd overwrite the rendered results.
+        if (currentTab === 'usage') {
+            clearTabResults('usage-results', 'Scanning disk usage...');
+        } else if (currentTab === 'large-files') {
+            clearTabResults('large-files-results', 'Finding large files...');
+        } else if (currentTab === 'duplicates') {
+            clearTabResults('duplicates-results', 'Finding duplicates...');
+        } else {
+            statusInfoEl.textContent = 'No scan configured for this tab';
+            return;
+        }
 
+        let scanId: string;
         if (currentTab === 'usage') {
             scanId = await invoke('start_scan_usage', { path, maxDepth: 2 });
-            clearTabResults('usage-results', 'Scanning disk usage...');
         } else if (currentTab === 'large-files') {
             scanId = await invoke('start_find_large_files', {
                 path,
                 minSize: 100 * 1024 * 1024, // 100MB default
                 maxResults: 100,
             });
-            clearTabResults('large-files-results', 'Finding large files...');
         } else if (currentTab === 'duplicates') {
             scanId = await invoke('start_find_duplicates', { path });
-            clearTabResults('duplicates-results', 'Finding duplicates...');
         } else {
             statusInfoEl.textContent = 'No scan configured for this tab';
             return;
@@ -871,11 +881,11 @@ function setupScanListeners() {
 
     listen('scan:chunk', (event) => {
         console.log('scan:chunk received', event.payload);
-        const data = event.payload as any;
+        const chunk = event.payload as any;
+        const data = chunk.data;
 
         if (data.type === 'folder_usage') {
-            const usage = data.usage;
-            scanResults.usage.push(usage);
+            scanResults.usage.push(data.usage);
             renderUsageResults();
         } else if (data.type === 'large_file') {
             scanResults.largeFiles.push(data.entry);

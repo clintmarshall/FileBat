@@ -65,8 +65,13 @@ impl FolderUsageAccumulator {
                 None => break,
             };
 
+            let ancestor_count = ancestor.components().count() as u32;
+            if ancestor_count < self.base_depth {
+                // Ancestor is above the base path (e.g., symlink target outside the tree)
+                break;
+            }
             let key = normalize_path(ancestor);
-            let folder_depth = ancestor.components().count() as u32 - self.base_depth;
+            let folder_depth = ancestor_count - self.base_depth;
 
             let entry = self
                 .folder_map
@@ -92,7 +97,12 @@ impl FolderUsageAccumulator {
     /// Creates a FolderUsage entry if one doesn't already exist for this path.
     pub fn record_directory(&mut self, path: &std::path::Path) {
         let key = normalize_path(path);
-        let folder_depth = path.components().count() as u32 - self.base_depth;
+        let path_count = path.components().count() as u32;
+        if path_count < self.base_depth {
+            // Path is above the base (e.g., symlink target outside the tree)
+            return;
+        }
+        let folder_depth = path_count - self.base_depth;
 
         self.folder_map.entry(key).or_insert_with(|| FolderUsage {
             path: normalize_path(path),
