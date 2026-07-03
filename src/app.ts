@@ -25,7 +25,7 @@ interface Entry {
   path: string;
   size: number;
   modified: string;
-  entry_type: 'File' | 'Folder' | 'Symlink' | 'Drive';
+  entryType: 'File' | 'Folder' | 'Symlink' | 'Drive';
   extension: string | null;
 }
 
@@ -216,7 +216,7 @@ async function startRename(index: number) {
   renamingRow = row as HTMLElement;
   renameInput = input;
 
-  const dotIdx = entry.entry_type === 'File' ? entry.name.lastIndexOf('.') : -1;
+  const dotIdx = entry.entryType === 'File' ? entry.name.lastIndexOf('.') : -1;
   input.setSelectionRange(0, dotIdx >= 0 ? dotIdx : entry.name.length);
   input.focus();
 
@@ -301,14 +301,14 @@ function createFileRow(entry: Entry, index: number): HTMLElement {
   row.className = 'file-item';
   row.dataset.index = String(index);
   row.dataset.path = entry.path;
-  row.dataset.type = entry.entry_type;
+  row.dataset.type = entry.entryType;
 
   row.innerHTML = `
     <span class="col-name">
-      <span class="icon">${entryIcon(entry.entry_type)}</span>
+      <span class="icon">${entryIcon(entry.entryType)}</span>
       ${entry.name}
     </span>
-    <span class="col-size">${entry.entry_type === 'Folder' ? '' : formatSize(entry.size)}</span>
+    <span class="col-size">${entry.entryType === 'Folder' ? '' : formatSize(entry.size)}</span>
     <span class="col-date">${formatDate(entry.modified)}</span>
   `;
 
@@ -331,7 +331,7 @@ function bindRowEvents(row: HTMLElement, entry: Entry, index: number) {
 
   // Double click — open
   row.addEventListener('dblclick', () => {
-    if (entry.entry_type === 'Folder' || entry.entry_type === 'Drive') {
+    if (entry.entryType === 'Folder' || entry.entryType === 'Drive') {
       navigateTo(entry.path);
     }
   });
@@ -342,7 +342,7 @@ function bindRowEvents(row: HTMLElement, entry: Entry, index: number) {
     if (!selectedIndices.has(index)) singleSelect(index);
 
     const selected = getSelectedEntries();
-    const allFolders = selected.length > 0 && selected.every((s) => s.entry_type === 'Folder');
+    const allFolders = selected.length > 0 && selected.every((s) => s.entryType === 'Folder');
 
     const items: ContextMenuItem[] = [
       { label: 'Open', disabled: !allFolders, action: handleOpenWith },
@@ -392,7 +392,7 @@ function renderSelection() {
   const count = selectedIndices.size;
   if (count > 0 && currentEntries.length > 0) {
     const totalSize = getSelectedEntries()
-      .filter((e) => e.entry_type === 'File')
+      .filter((e) => e.entryType === 'File')
       .reduce((sum, e) => sum + e.size, 0);
     statusInfoEl.textContent =
       `${count} item${count !== 1 ? 's' : ''} selected · ${formatSize(totalSize)}`;
@@ -401,7 +401,7 @@ function renderSelection() {
 
 function updateStatus(entries: Entry[]) {
   if (selectedIndices.size === 0) {
-    const fileCount = entries.filter((e) => e.entry_type === 'File').length;
+    const fileCount = entries.filter((e) => e.entryType === 'File').length;
     const folderCount = entries.length - fileCount;
     statusInfoEl.textContent =
       `${entries.length} item${entries.length !== 1 ? 's' : ''} · ${fileCount} file${fileCount !== 1 ? 's' : ''} · ${folderCount} folder${folderCount !== 1 ? 's' : ''}`;
@@ -574,7 +574,7 @@ function handleEnterKey() {
   if (selectedIndices.size === 0) return;
   const idx = Math.min(...selectedIndices);
   const entry = currentEntries[idx];
-  if (entry && (entry.entry_type === 'Folder' || entry.entry_type === 'Drive')) {
+  if (entry && (entry.entryType === 'Folder' || entry.entryType === 'Drive')) {
     navigateTo(entry.path);
   }
 }

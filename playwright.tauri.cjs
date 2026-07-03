@@ -134,6 +134,63 @@ try {
 		console.log(`\n✓ Sidebar drives: ${drives}`);
 		if (drives === 0) console.log('  ✗ WARNING: no drives found!');
 
+		// ─── Test 1b: File list shows folder icons and double-click navigates ───
+		console.log('\nTesting file list folder icons and navigation...');
+
+		// Get the first drive path and click it
+		const firstDrive = await page.locator('#drives .sidebar-item').first();
+		const drivePath = await page.inputValue('#scan-path'); // Pre-populated path like "C:\"
+		console.log(`  Navigating to ${drivePath}...`);
+
+		// Click on the first drive in sidebar
+		await firstDrive.click();
+		await page.waitForTimeout(1000);
+
+		// Check that file list items exist
+		const fileItems = await page.locator('#file-list .file-item').count();
+		console.log(`  File items: ${fileItems}`);
+
+		if (fileItems > 0) {
+			// Check for folder icons (📁) in the file list
+			const firstItemText = await page.locator('#file-list .file-item .icon').first().textContent();
+			console.log(`  First item icon: "${firstItemText.trim()}"`);
+
+			// Folders should have 📁 icon, not 📄
+			if (firstItemText.trim() === '📁') {
+				console.log('  ✓ PASS: Folder icon (📁) displayed correctly');
+			} else if (firstItemText.trim() === '📄') {
+				console.log('  ✗ FAIL: Folder showing as file icon (📄) — entryType mismatch!');
+				process.exitCode = 1;
+			} else {
+				console.log(`  ⚠ Unexpected icon: ${firstItemText.trim()}`);
+			}
+
+			// Double-click the first folder to navigate into it
+			const firstFolder = page.locator('#file-list .file-item').first();
+			const firstFolderPath = await firstFolder.getAttribute('data-path');
+			console.log(`  Double-clicking folder: ${firstFolderPath}`);
+
+			await firstFolder.dblclick();
+			await page.waitForTimeout(1000);
+
+			// Check that the breadcrumb updated (navigation happened)
+			const newBreadcrumb = await page.locator('#breadcrumb').textContent();
+			console.log(`  New breadcrumb: ${newBreadcrumb}`);
+
+			if (newBreadcrumb !== drivePath && newBreadcrumb.includes(firstFolderPath?.split('\\').pop() || '')) {
+				console.log('  ✓ PASS: Double-click navigated into folder');
+			} else {
+				console.log('  ✗ FAIL: Double-click did not navigate');
+				process.exitCode = 1;
+			}
+
+			// Navigate back to the drive for subsequent tests
+			await firstDrive.click();
+			await page.waitForTimeout(500);
+		} else {
+			console.log('  ⚠ No file items to test (drive may be empty)');
+		}
+
 		// ─── Test 2: Analytics toggle ───
 		console.log('\nTesting analytics toggle...');
 
