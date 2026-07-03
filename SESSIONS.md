@@ -4,17 +4,30 @@
 
 **Goal:** Run fallow, remove noise, refactor complexity, set up git
 
-**What we did:**
-- Created `fallow.toml` — excluded build artifacts, ignored test helper exports
-- Added `playwright` to devDependencies
+### Refactoring
 - Extracted keyboard handler (CRAP 172 → 26) into 5 focused functions
 - Extracted context menu helpers (`buildContextMenuItem`, `clampToViewport`)
 - Extracted `renderEntries` row creation (`createFileRow`, `bindRowEvents`)
 - Extracted `startRename` into `createRenameInput` + `setupRenameEvents`
+- Deduplicated Tauri IPC tests with `bootAndScan` + `getInvokeCall` helpers
+
+### Architecture
 - Created `src/utils.ts` — shared `formatSize`, `formatDate`, `entryIcon`
-- Deduplicated test setup with `src/test/helpers.ts`
-- Added 6 keyboard navigation tests
-- Set up `.gitignore`, committed, pushed to GitHub
+- Created `src/test/helpers.ts` — shared test setup (`createDom`, `bootApp`, etc.)
+
+### Tests
+- Added 6 keyboard navigation tests (Ctrl+A, ArrowDown, ArrowUp, Ctrl+C, Ctrl+X, Delete)
+- Refactored `app.test.ts` to import from `utils.ts` instead of copy-pasting
+
+### Tooling
+- Created `fallow.toml` — excluded build artifacts, ignored test helper exports
+- Created `fallow-progress.md` — health progression table with journey tracking
+- Created `fallow-chart.html` — visual charts (MI, CRAP, dead files, duplication)
+- Added `playwright` to devDependencies
+- Set up `.gitignore`, initialized git, pushed to GitHub
+
+### Documentation
+- Added fallow workflow reference to `CLAUDE.md`
 
 **Metrics:**
 | MI | Max CRAP (prod) | Dup % | Clone Groups | Tests |
