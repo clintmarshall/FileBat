@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fallow Progression</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 2rem; }
+  h1 { font-size: 1.4rem; margin-bottom: 1.5rem; color: #58a6ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.2rem; }
+  .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; margin-bottom: 0.8rem; }
+  .card canvas { width: 100%; height: 200px; }
+  .legend { display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: #8b949e; }
+  .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .legend .mi::before { background: #3fb950; }
+  .legend .crap::before { background: #f85149; }
+  .legend .dead::before { background: #d29922; }
+  .legend .dup::before { background: #bc8cff; }
+  .data-table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; font-size: 0.8rem; }
+  .data-table th, .data-table td { padding: 0.4rem 0.6rem; border: 1px solid #30363d; text-align: right; }
+  .data-table th { color: #8b949e; font-weight: 600; }
+  .data-table td:first-child { text-align: left; }
+  .up { color: #3fb950; }
+  .down { color: #f85149; }
+</style>
+</head>
+<body>
+<h1>📈 Fallow Progression</h1>
+<div class="grid">
+  <div class="card">
+    <h2>Maintainability Index (target ≥ 85)</h2>
+    <canvas id="miChart"></canvas>
+    <div class="legend"><span class="mi">MI Score</span></div>
+  </div>
+  <div class="card">
+    <h2>Max CRAP Score (lower is better)</h2>
+    <canvas id="crapChart"></canvas>
+    <div class="legend"><span class="crap">Max CRAP</span></div>
+  </div>
+  <div class="card">
+    <h2>Dead Files % (target 0%)</h2>
+    <canvas id="deadChart"></canvas>
+    <div class="legend"><span class="dead">Dead Files %</span></div>
+  </div>
+  <div class="card">
+    <h2>Duplication % (lower is better)</h2>
+    <canvas id="dupChart"></canvas>
+    <div class="legend"><span class="dup">Dup %</span></div>
+  </div>
+</div>
+
+<table class="data-table" id="dataTable"></table>
+
+<script>
+// ── DATA ──
+const rows = [
+  { date: '2026-07-03T09:00', loc: 2840, dead: 43.8, mi: 79.1, crap: 702, dup: 9.8, note: 'Baseline' },
+  { date: '2026-07-03T09:15', loc: 2192, dead: 0.0, mi: 94.9, crap: 210, dup: 10.0, note: 'Noise removed' },
+  { date: '2026-07-03T11:20', loc: 2440, dead: 0.0, mi: 94.4, crap: 210, dup: 6.6, note: 'Refactored keyboard, context menu, render, tests' },
+  { date: '2026-07-03T11:35', loc: 2403, dead: 0.0, mi: 93.8, crap: 210, dup: 3.8, note: 'Extracted utils.ts — shared formatSize/formatDate/entryIcon' },
+];
+
+// ── RENDER HELPERS ──
+function drawLine(canvasId, data, key, color, target, invert) {
+  const c = document.getElementById(canvasId);
+  const ctx = c.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr;
+  c.height = c.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  const W = c.clientWidth, H = c.clientHeight;
+  const pad = { t: 10, r: 15, b: 30, l: 45 };
+  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+  const vals = data.map(d => d[key]);
+  const lo = Math.min(...vals, 0);
+  const hi = Math.max(...vals, target || 0);
+  const range = hi - lo || 1;
+
+  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
+  const y = (v) => pad.t + ch - ((v - lo) / range) * ch;
+
+  // Grid
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const yy = pad.t + (ch / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+    const val = hi - (range / 4) * i;
+    ctx.fillStyle = '#484f58'; ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(0), pad.l - 6, yy + 3);
+  }
+
+  // Target line
+  if (target !== null && target !== undefined) {
+    const ty = y(target);
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = invert ? '#3fb95066' : '#f8514966';
+    ctx.beginPath(); ctx.moveTo(pad.l, ty); ctx.lineTo(W - pad.r, ty); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = invert ? '#3fb95088' : '#f8514988';
+    ctx.textAlign = 'left'; ctx.fillText(`target ${target}`, W - pad.r - 50, ty - 5);
+  }
+
+  // Line
+  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  data.forEach((d, i) => { i === 0 ? ctx.moveTo(x(i), y(d[key])) : ctx.lineTo(x(i), y(d[key])); });
+  ctx.stroke();
+
+  // Dots
+  data.forEach((d, i) => {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x(i), y(d[key]), 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c9d1d9'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(d[key].toString(), x(i), y(d[key]) - 10);
+  });
+
+  // X labels
+  ctx.fillStyle = '#484f58'; ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+  data.forEach((d, i) => ctx.fillText(d.date.slice(5), x(i), H - pad.b + 15));
+}
+
+// ── DRAW CHARTS ──
+drawLine('miChart', rows, 'mi', '#3fb950', 85, false);
+drawLine('crapChart', rows, 'crap', '#f85149', null, true);
+drawLine('deadChart', rows, 'dead', '#d29922', 0, true);
+drawLine('dupChart', rows, 'dup', '#bc8cff', null, true);
+
+// ── DATA TABLE ──
+// "higher" means bigger is better (MI). Everything else: smaller is better.
+const higherIsBetter = new Set(['mi']);
+const numericKeys = new Set(['loc', 'dead', 'mi', 'crap', 'dup']);
+const cols = [
+  { key: 'date', label: 'Date', fmt: v => v },
+  { key: 'loc', label: 'LOC', fmt: v => v.toLocaleString() },
+  { key: 'dead', label: 'Dead %', fmt: v => v + '%' },
+  { key: 'mi', label: 'MI', fmt: v => v },
+  { key: 'crap', label: 'Max CRAP', fmt: v => v },
+  { key: 'dup', label: 'Dup %', fmt: v => v + '%' },
+  { key: 'note', label: 'Notes', fmt: v => v },
+];
+
+function cellClass(key, current, previous) {
+  if (current === previous) return '';
+  const better = higherIsBetter.has(key) ? current > previous : current < previous;
+  return better ? 'up' : 'down';
+}
+
+const tbl = document.getElementById('dataTable');
+const thead = document.createElement('thead');
+thead.innerHTML = '<tr>' + cols.map(c => `<th>${c.label}</th>`).join('') + '</tr>';
+tbl.appendChild(thead);
+const tbody = document.createElement('tbody');
+rows.forEach((r, i) => {
+  const prev = i > 0 ? rows[i - 1] : null;
+  const cells = cols.map(c => {
+    const cls = prev && numericKeys.has(c.key) ? cellClass(c.key, r[c.key], prev[c.key]) : '';
+    return `<td class="${cls}">${c.fmt(r[c.key])}</td>`;
+  }).join('');
+  tbody.innerHTML += '<tr>' + cells + '</tr>';
+});
+tbl.appendChild(tbody);
+</script>
+</body>
+</html>

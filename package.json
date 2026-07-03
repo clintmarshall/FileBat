@@ -1,0 +1,29 @@
+{
+  "name": "filebitch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:vite": "vite",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "node playwright.tauri.cjs",
+    "inspect:ui": "vite --port 1421" 
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@vitest/ui": "^4.1.9",
+    "jsdom": "^29.1.1",
+    "playwright": "^1",
+    "typescript": "^5",
+    "vite": "^6",
+    "vite-plugin-inspect": "^11.4.1",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  }
+}
