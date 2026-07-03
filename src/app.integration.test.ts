@@ -204,49 +204,50 @@ describe('Analytics — Disk Usage Scan', () => {
   });
 });
 
+async function bootAndScan(tabName?: string) {
+  await bootApp((cmd) => {
+    if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+    if (cmd.startsWith('start_')) return 'scan-ok';
+    return [];
+  });
+
+  document.getElementById('btn-analytics')!.click();
+  await flushPromises();
+
+  if (tabName) {
+    document.querySelector(`[data-tab="${tabName}"]`)!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+    await flushPromises();
+  }
+
+  document.getElementById('btn-scan')!.click();
+  await flushPromises();
+}
+
+async function getInvokeCall(command: string): Promise<Record<string, unknown>> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const call = (invoke as unknown as TauriMockInvoke).mock.calls.find(
+    (c: string[]) => c[0] === command,
+  );
+  return call![1] as Record<string, unknown>;
+}
+
 describe('Tauri IPC — Argument Casing', () => {
   beforeEach(() => {
     resetTauriMocks();
   });
 
   it('start_scan_usage → max_depth (not MaxDepth)', async () => {
-    await bootApp((cmd) => {
-      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
-      if (cmd.startsWith('start_')) return 'scan-ok';
-      return [];
-    });
-
-    document.getElementById('btn-analytics')!.click();
-    await flushPromises();
-    document.getElementById('btn-scan')!.click();
-    await flushPromises();
-
-    const { invoke } = await import('@tauri-apps/api/core');
-    const call = (invoke as unknown as TauriMockInvoke).mock.calls.find(c => c[0] === 'start_scan_usage');
-    const args = call![1] as Record<string, unknown>;
-
+    await bootAndScan();
+    const args = await getInvokeCall('start_scan_usage');
     expect(args).toHaveProperty('max_depth');
     expect(args).not.toHaveProperty('MaxDepth');
   });
 
   it('start_find_large_files → min_size, max_results', async () => {
-    await bootApp((cmd) => {
-      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
-      if (cmd.startsWith('start_')) return 'scan-ok';
-      return [];
-    });
-
-    document.getElementById('btn-analytics')!.click();
-    await flushPromises();
-    document.querySelector('[data-tab="large-files"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flushPromises();
-    document.getElementById('btn-scan')!.click();
-    await flushPromises();
-
-    const { invoke } = await import('@tauri-apps/api/core');
-    const call = (invoke as unknown as TauriMockInvoke).mock.calls.find(c => c[0] === 'start_find_large_files');
-    const args = call![1] as Record<string, unknown>;
-
+    await bootAndScan('large-files');
+    const args = await getInvokeCall('start_find_large_files');
     expect(args).toHaveProperty('min_size');
     expect(args).toHaveProperty('max_results');
     expect(args).not.toHaveProperty('MinSize');
@@ -254,23 +255,8 @@ describe('Tauri IPC — Argument Casing', () => {
   });
 
   it('start_find_duplicates → path (snake_case)', async () => {
-    await bootApp((cmd) => {
-      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
-      if (cmd.startsWith('start_')) return 'scan-ok';
-      return [];
-    });
-
-    document.getElementById('btn-analytics')!.click();
-    await flushPromises();
-    document.querySelector('[data-tab="duplicates"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flushPromises();
-    document.getElementById('btn-scan')!.click();
-    await flushPromises();
-
-    const { invoke } = await import('@tauri-apps/api/core');
-    const call = (invoke as unknown as TauriMockInvoke).mock.calls.find(c => c[0] === 'start_find_duplicates');
-    const args = call![1] as Record<string, unknown>;
-
+    await bootAndScan('duplicates');
+    const args = await getInvokeCall('start_find_duplicates');
     expect(args).toHaveProperty('path');
   });
 });

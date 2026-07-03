@@ -1,0 +1,5 @@
+# Vite build output (copied into Tauri assets)
+src-tauri/frontend-dist/
+
+# Rust build artifacts
+target/

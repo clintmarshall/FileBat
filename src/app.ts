@@ -158,28 +158,56 @@ interface ContextMenuItem {
 
 // ─── Rename (F2 / inline) ───
 
-async function startRename(index: number) {
-  const entry = currentEntries[index];
-  if (!entry) return;
-
-  const rows = fileListEl.querySelectorAll('.file-item');
-  const row = rows[index];
-  if (!row) return;
-
-  const nameSpan = row.querySelector('.col-name')!;
-  const iconSpan = nameSpan.querySelector('.icon')!;
-  const oldName = entry.name;
-
-  // Create input
+function createRenameInput(entry: Entry): HTMLInputElement {
   const input = document.createElement('input');
   input.type = 'text';
-  input.value = oldName;
+  input.value = entry.name;
   input.style.cssText = `
     flex: 1; border: 2px solid var(--accent); outline: none;
     font: inherit; padding: 0 4px; border-radius: 2px;
   `;
+  return input;
+}
 
-  // Replace name text with input
+function setupRenameEvents(
+  input: HTMLInputElement,
+  entry: Entry,
+  oldName: string,
+) {
+  async function finishRename() {
+    const newName = input.value.trim();
+    if (newName && newName !== oldName) {
+      try {
+        await invoke('rename', { path: entry.path, newName });
+        if (currentPath) await navigateTo(currentPath);
+      } catch (err) {
+        statusInfoEl.textContent = `Rename error: ${err}`;
+        if (currentPath) await navigateTo(currentPath);
+      }
+    } else {
+      if (currentPath) await navigateTo(currentPath);
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finishRename(); }
+    else if (e.key === 'Escape') { if (currentPath) navigateTo(currentPath); }
+  });
+
+  input.addEventListener('blur', finishRename);
+}
+
+async function startRename(index: number) {
+  const entry = currentEntries[index];
+  if (!entry) return;
+
+  const row = fileListEl.querySelectorAll('.file-item')[index];
+  if (!row) return;
+
+  const nameSpan = row.querySelector('.col-name')!;
+  const iconSpan = nameSpan.querySelector('.icon')!;
+
+  const input = createRenameInput(entry);
   nameSpan.innerHTML = '';
   nameSpan.appendChild(iconSpan);
   nameSpan.appendChild(input);
@@ -188,38 +216,11 @@ async function startRename(index: number) {
   renamingRow = row as HTMLElement;
   renameInput = input;
 
-  // Select the filename (without extension for files)
-  const dotIdx = entry.entry_type === 'File' ? oldName.lastIndexOf('.') : -1;
-  input.setSelectionRange(0, dotIdx >= 0 ? dotIdx : oldName.length);
+  const dotIdx = entry.entry_type === 'File' ? entry.name.lastIndexOf('.') : -1;
+  input.setSelectionRange(0, dotIdx >= 0 ? dotIdx : entry.name.length);
   input.focus();
 
-  async function finishRename() {
-    const newName = input.value.trim();
-    if (newName && newName !== oldName) {
-      try {
-        await invoke('rename', { path: entry.path, newName });
-        // Refresh the directory
-        if (currentPath) await navigateTo(currentPath);
-      } catch (err) {
-        statusInfoEl.textContent = `Rename error: ${err}`;
-        if (currentPath) await navigateTo(currentPath);
-      }
-    } else {
-      // Cancel — re-render
-      if (currentPath) await navigateTo(currentPath);
-    }
-  }
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      finishRename();
-    } else if (e.key === 'Escape') {
-      if (currentPath) navigateTo(currentPath);
-    }
-  });
-
-  input.addEventListener('blur', finishRename);
+  setupRenameEvents(input, entry, entry.name);
 }
 
 // ─── File Operations ───
@@ -569,24 +570,30 @@ function handleArrowNav(e: KeyboardEvent) {
   return false;
 }
 
+function handleEnterKey() {
+  if (selectedIndices.size === 0) return;
+  const idx = Math.min(...selectedIndices);
+  const entry = currentEntries[idx];
+  if (entry && (entry.entry_type === 'Folder' || entry.entry_type === 'Drive')) {
+    navigateTo(entry.path);
+  }
+}
+
+function handleBackspaceKey() {
+  if (!currentPath) return;
+  const parent = currentPath.slice(0, currentPath.lastIndexOf('\\'));
+  if (parent) navigateTo(parent);
+}
+
 function handleActionKeys(e: KeyboardEvent) {
   switch (e.key) {
     case 'Enter':
       e.preventDefault();
-      if (selectedIndices.size > 0) {
-        const idx = Math.min(...selectedIndices);
-        const entry = currentEntries[idx];
-        if (entry && (entry.entry_type === 'Folder' || entry.entry_type === 'Drive')) {
-          navigateTo(entry.path);
-        }
-      }
+      handleEnterKey();
       return true;
     case 'F2':
       e.preventDefault();
-      if (selectedIndices.size > 0) {
-        const idx = Math.min(...selectedIndices);
-        startRename(idx);
-      }
+      if (selectedIndices.size > 0) startRename(Math.min(...selectedIndices));
       return true;
     case 'Delete':
       e.preventDefault();
@@ -594,10 +601,7 @@ function handleActionKeys(e: KeyboardEvent) {
       return true;
     case 'Backspace':
       e.preventDefault();
-      if (currentPath) {
-        const parent = currentPath.slice(0, currentPath.lastIndexOf('\\'));
-        if (parent) navigateTo(parent);
-      }
+      handleBackspaceKey();
       return true;
   }
   return false;

@@ -40,6 +40,7 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 | 2026-07-03 | 2192 | 0 (0.0%) | 0 (0.0%) | 1.9 | 3 | 94.9 | 210.0 | 208 | 10.0% | 11 | Noise removed — build artifacts ignored, playwright added to deps |
 | 2026-07-03 | 2440 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 94.4 | 210.0 | 144 | 6.6% | 10 | Refactored: keyboard (CRAP 172→43), context menu, renderEntries, test dedup |
 | 2026-07-03 | 2403 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 210.0 | 81 | 3.8% | 6 | Extracted utils.ts — formatSize/formatDate/entryIcon shared module |
+| 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | Final: handleActionKeys, startRename, test dedup. Done. |
 
 ## Changes (2026-07-03 — Noise Removal)
 
