@@ -42,6 +42,7 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 | 2026-07-03 | 2403 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 210.0 | 81 | 3.8% | 6 | Extracted utils.ts — formatSize/formatDate/entryIcon shared module |
 | 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | Final: handleActionKeys, startRename, test dedup. Done. |
 | 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | camelCase standardisation — #[serde(rename_all)] on 9 structs |
+| 2026-07-03 | 2384 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 132.0 | 17 | 0.8% | 1 | Fix scan events — 4 bugs (overflow, serde rename, timing, CSS) |
 
 ## Changes (2026-07-03 — Noise Removal)
 
@@ -109,3 +110,16 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 ### Refactoring Targets
 1. **Score 17.7** — `frontend-dist/assets/index-raQYeRWf.js` (untested risk — build artifact, ignore)
 2. **Score 4.3** — `src/app.ts` (complexity — cognitive 30 arrow in 986-LOC file)
+
+## Changes (2026-07-03 — Fix Scan Events)
+
+**4 bugs found via instrumentation (eprintln! + MutationObserver), not guessing:**
+
+1. **Rust integer overflow** — `ancestor.components().count() - base_depth` underflowed when walkdir returned paths with fewer components than the base. The `spawn_blocking` task panicked, dropping all events. Added guard check.
+2. **Serde field rename mismatch** — `ScanChunk.data` was serialized as `"all"` but frontend read `chunk.data`. Removed `#[serde(rename = "all")]`.
+3. **Frontend timing** — `clearTabResults` called after `invoke()` returned, overwriting the table rendered by chunk events. Moved `clearTabResults` before the `invoke()` call.
+4. **CSS layout** — `.analytics-tab-content` was `display: block` with no height. Changed to `display: flex; flex-direction: column` with `flex: 1` on result containers.
+
+**Files:** `src-tauri/src/domain/models.rs`, `src-tauri/src/usecases/analytics/aggregator.rs`, `src/app.ts`, `src/app.integration.test.ts`, `src/styles/main.css`, `playwright.tauri.cjs`
+
+**Result:** Max CRAP 210.0 → 132.0 (playwright.tauri.cjs, down from removed build artifact). Dup 35 lines → 17 lines. All 92 tests pass.
