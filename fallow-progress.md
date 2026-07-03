@@ -43,6 +43,7 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 | 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | Final: handleActionKeys, startRename, test dedup. Done. |
 | 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | camelCase standardisation — #[serde(rename_all)] on 9 structs |
 | 2026-07-03 | 2384 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 132.0 | 17 | 0.8% | 1 | Fix scan events — 4 bugs (overflow, serde rename, timing, CSS) |
+| 2026-07-03 | 2522 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 306.0 | 17 | 0.8% | 1 | Fix entryType camelCase regression + contract/E2E tests |
 
 ## Changes (2026-07-03 — Noise Removal)
 
@@ -123,3 +124,20 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 **Files:** `src-tauri/src/domain/models.rs`, `src-tauri/src/usecases/analytics/aggregator.rs`, `src/app.ts`, `src/app.integration.test.ts`, `src/styles/main.css`, `playwright.tauri.cjs`
 
 **Result:** Max CRAP 210.0 → 132.0 (playwright.tauri.cjs, down from removed build artifact). Dup 35 lines → 17 lines. All 92 tests pass.
+
+## Changes (2026-07-03 — Fix entryType camelCase Regression)
+
+**Bug:** `#[serde(rename_all = "camelCase")]` on `Entry` serializes `entry_type` as `entryType`, but the frontend read `entry_type` (snake_case). Every `entry_type` check returned `undefined`:
+- All entries showed file icon (📄) instead of folder (📁)
+- Double-click navigation never triggered
+- Size column showed for folders (should be blank)
+
+**Fix:** Updated frontend `Entry` interface and all usages to `entryType`.
+
+**Tests added:**
+- `entry-serialization.test.ts` — Contract test verifying Rust serialization matches frontend expectations
+- E2E — Folder icon check + double-click navigation verification
+
+**Files:** `src/app.ts`, `src/keyboard.test.ts`, `src/entry-serialization.test.ts`, `playwright.tauri.cjs`
+
+**Result:** LOC 2384 → 2522 (new test file + E2E additions). Max CRAP 132 → 306 (E2E test growth in playwright.tauri.cjs). MI 93.9 → 93.8 (stable). Dup 0.8% unchanged.
