@@ -45,6 +45,7 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 | 2026-07-03 | 2384 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 132.0 | 17 | 0.8% | 1 | Fix scan events — 4 bugs (overflow, serde rename, timing, CSS) |
 | 2026-07-03 | 2522 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 306.0 | 17 | 0.8% | 1 | Fix entryType camelCase regression + contract/E2E tests |
 | 2026-07-04 | 4233 | 1 (6.7%) | 3 (20.0%) | 1.6 | 3 | 92.2 | N/R | 106 | 17.0% | 9 | Fallow OOM fix — ignorePatterns, .gitignore tightened, unit tests added |
+| 2026-07-04 | 4373 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.4 | 306.0 | 675 | 17.2% | 10 | Config consolidation — drop fallow.toml, add ignoreExports, main.css ignored |
 
 ## Changes (2026-07-03 — Noise Removal)
 
@@ -89,6 +90,13 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 - **Dead exports** — `src/test/helpers.ts` exports `registeredHandlers`, `createDom`, `mockTauriApi` with no known consumers (43% dead code in that file).
 - **Duplicate export** — `bootApp` defined in both `src/test/boot.ts` and `src/test/helpers.ts`.
 - **LOC jump** — 2394 → 4233. Expected: unit tests doubled the analyzed source. MI held at 92.2 despite the volume.
+
+## Changes (2026-07-04 — Config Consolidation)
+
+- **Dropped `fallow.toml`** — Superseded by `.fallowrc.json`.
+- **Added `src/styles/main.css` to `ignorePatterns`** — Eliminates the last dead-file false positive (imported via `<link>`, not JS).
+- **Added `ignoreExports`** — Suppresses dead-export warnings for `helpers.ts` test utilities (`registeredHandlers`, `createDom`, `mockTauriApi`).
+- **Result:** Dead files 6.7% → 0%. Dead exports 20% → 0%. MI 92.2 → 93.4.
 
 ## Baseline Details (2026-07-03)
 
