@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": [
+    "src/index.{ts,tsx,js,jsx}",
+    "src/main.{ts,tsx,js,jsx}"
+  ],
+  "ignorePatterns": [
+    "**/target/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/coverage/**",
+    "**/html/**",
+    "**/src-tauri/frontend-dist/**",
+    "**/src/src-tauri/**",
+    "**/lib/**",
+    "**/legacy/**",
+    "**/__generated__/**",
+    "**/generated/**",
+    "**/*.old",
+    "**/*.lock"
+  ],
+  "duplicates": {
+    "minOccurrences": 3
+  },
+  "rules": {
+    "unused-dependencies": "warn"
+  }
+}

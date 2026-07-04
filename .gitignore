@@ -31,9 +31,14 @@ desktop.ini
 
 # Scratch files
 refImplementation.rs
+*.old
 
 # Accidental nested build output
 src/src-tauri/
+
+# Coverage / report artifacts
+coverage/
+html/
 
 # Logs
 *.log
