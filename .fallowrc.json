@@ -12,12 +12,16 @@
     "**/html/**",
     "**/src-tauri/frontend-dist/**",
     "**/src/src-tauri/**",
+    "src/styles/main.css",
     "**/lib/**",
     "**/legacy/**",
     "**/__generated__/**",
     "**/generated/**",
     "**/*.old",
     "**/*.lock"
+  ],
+  "ignoreExports": [
+    { "file": "src/test/helpers.ts", "exports": ["registeredHandlers", "createDom", "mockTauriApi"] }
   ],
   "duplicates": {
     "minOccurrences": 3
