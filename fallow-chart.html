@@ -14,7 +14,8 @@
   .legend { display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: #8b949e; }
   .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
   .legend .mi::before { background: #3fb950; }
-  .legend .crap::before { background: #f85149; }
+  .legend .crapApp::before { background: #f85149; }
+  .legend .crapTest::before { background: #f8514988; }
   .legend .dead::before { background: #d29922; }
   .legend .dup::before { background: #bc8cff; }
   .data-table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; font-size: 0.8rem; }
@@ -34,9 +35,9 @@
     <div class="legend"><span class="mi">MI Score</span></div>
   </div>
   <div class="card">
-    <h2>Max CRAP Score (lower is better)</h2>
+    <h2>CRAP Score (lower is better)</h2>
     <canvas id="crapChart"></canvas>
-    <div class="legend"><span class="crap">Max CRAP</span></div>
+    <div class="legend"><span class="crapApp">App Code</span><span class="crapTest">Test Code</span></div>
   </div>
   <div class="card">
     <h2>Dead Files % (target 0%)</h2>
@@ -55,18 +56,18 @@
 <script>
 // ── DATA ──
 const rows = [
-  { date: '2026-07-03T09:00', loc: 2840, dead: 43.8, mi: 79.1, crap: 702, dup: 9.8, note: 'Baseline' },
-  { date: '2026-07-03T09:15', loc: 2192, dead: 0.0, mi: 94.9, crap: 210, dup: 10.0, note: 'Noise removed' },
-  { date: '2026-07-03T11:20', loc: 2440, dead: 0.0, mi: 94.4, crap: 210, dup: 6.6, note: 'Refactored keyboard, context menu, render, tests' },
-  { date: '2026-07-03T11:35', loc: 2403, dead: 0.0, mi: 93.8, crap: 210, dup: 3.8, note: 'Extracted utils.ts — shared formatSize/formatDate/entryIcon' },
-  { date: '2026-07-03T11:50', loc: 2394, dead: 0.0, mi: 93.9, crap: 210, dup: 1.7, note: 'Final: handleActionKeys, startRename, test dedup. Done.' },
-  { date: '2026-07-03T12:30', loc: 2394, dead: 0.0, mi: 93.9, crap: 210, dup: 1.7, note: 'camelCase standardisation — #[serde(rename_all)] on 9 structs' },
-  { date: '2026-07-03T20:20', loc: 2384, dead: 0.0, mi: 93.9, crap: 132, dup: 0.8, note: 'Fix scan events — 4 bugs (overflow, serde rename, timing, CSS)' },
-  { date: '2026-07-03T21:35', loc: 2522, dead: 0.0, mi: 93.8, crap: 306, dup: 0.8, note: 'Fix entryType camelCase regression + contract/E2E tests' },
-  { date: '2026-07-04T10:00', loc: 4233, dead: 6.7, mi: 92.2, crap: 0, dup: 17.0, note: 'Fallow OOM fix — ignorePatterns, .gitignore, unit tests added (CRAP N/R — no coverage yet)' },
-  { date: '2026-07-04T14:00', loc: 4373, dead: 0.0, mi: 93.4, crap: 306, dup: 17.2, note: 'Config consolidation — drop fallow.toml, ignoreExports, main.css ignored' },
-  { date: '2026-07-04T16:00', loc: 4182, dead: 0.0, mi: 93.2, crap: 306, dup: 0.0, note: 'Extracted test factories — dup 17.2%→0%, LOC 4373→4182' },
-  { date: '2026-07-04T18:00', loc: 4205, dead: 0.0, mi: 93.1, crap: 56, dup: 0.0, note: 'Refactored playwright.tauri.cjs — 10 named functions (CRAP 306→56)' },
+  { date: '2026-07-03T09:00', loc: 2840, dead: 43.8, mi: 79.1, crapApp: 172, crapTest: 210, dup: 9.8, note: 'Baseline' },
+  { date: '2026-07-03T09:15', loc: 2192, dead: 0.0, mi: 94.9, crapApp: 172, crapTest: 210, dup: 10.0, note: 'Noise removed' },
+  { date: '2026-07-03T11:20', loc: 2440, dead: 0.0, mi: 94.4, crapApp: 43, crapTest: 210, dup: 6.6, note: 'Refactored keyboard, context menu, render, tests' },
+  { date: '2026-07-03T11:35', loc: 2403, dead: 0.0, mi: 93.8, crapApp: 43, crapTest: 210, dup: 3.8, note: 'Extracted utils.ts — shared formatSize/formatDate/entryIcon' },
+  { date: '2026-07-03T11:50', loc: 2394, dead: 0.0, mi: 93.9, crapApp: 43, crapTest: 210, dup: 1.7, note: 'Final: handleActionKeys, startRename, test dedup. Done.' },
+  { date: '2026-07-03T12:30', loc: 2394, dead: 0.0, mi: 93.9, crapApp: 43, crapTest: 210, dup: 1.7, note: 'camelCase standardisation — #[serde(rename_all)] on 9 structs' },
+  { date: '2026-07-03T20:20', loc: 2384, dead: 0.0, mi: 93.9, crapApp: 43, crapTest: 132, dup: 0.8, note: 'Fix scan events — 4 bugs (overflow, serde rename, timing, CSS)' },
+  { date: '2026-07-03T21:35', loc: 2522, dead: 0.0, mi: 93.8, crapApp: 43, crapTest: 306, dup: 0.8, note: 'Fix entryType camelCase regression + contract/E2E tests' },
+  { date: '2026-07-04T10:00', loc: 4233, dead: 6.7, mi: 92.2, crapApp: null, crapTest: null, dup: 17.0, note: 'Fallow OOM fix — ignorePatterns, .gitignore, unit tests added' },
+  { date: '2026-07-04T14:00', loc: 4373, dead: 0.0, mi: 93.4, crapApp: 10.2, crapTest: 306, dup: 17.2, note: 'Config consolidation — drop fallow.toml, ignoreExports, main.css ignored' },
+  { date: '2026-07-04T16:00', loc: 4182, dead: 0.0, mi: 93.2, crapApp: 10.2, crapTest: 306, dup: 0.0, note: 'Extracted test factories — dup 17.2%→0%, LOC 4373→4182' },
+  { date: '2026-07-04T18:00', loc: 4205, dead: 0.0, mi: 93.1, crapApp: 10.2, crapTest: 56, dup: 0.0, note: 'Refactored playwright.tauri.cjs — 10 named functions (CRAP 306→56)' },
 ];
 
 // ── RENDER HELPERS ──
@@ -129,28 +130,88 @@ function drawLine(canvasId, data, key, color, target, invert) {
   data.forEach((d, i) => ctx.fillText(d.date.slice(5), x(i), H - pad.b + 15));
 }
 
+// ── DRAW MULTI-LINE (for CRAP chart) ──
+function drawMultiLine(canvasId, data, keys, colors) {
+  const c = document.getElementById(canvasId);
+  const ctx = c.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr;
+  c.height = c.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  const W = c.clientWidth, H = c.clientHeight;
+  const pad = { t: 10, r: 15, b: 30, l: 45 };
+  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+  // Collect all values (skip nulls)
+  const allVals = [];
+  data.forEach(d => keys.forEach(k => { if (d[k] != null) allVals.push(d[k]); }));
+  const lo = Math.min(...allVals, 0);
+  const hi = Math.max(...allVals);
+  const range = hi - lo || 1;
+
+  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
+  const y = (v) => pad.t + ch - ((v - lo) / range) * ch;
+
+  // Grid
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const yy = pad.t + (ch / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+    const val = hi - (range / 4) * i;
+    ctx.fillStyle = '#484f58'; ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(0), pad.l - 6, yy + 3);
+  }
+
+  // Lines and dots
+  keys.forEach((key, ki) => {
+    const color = colors[ki];
+    ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let started = false;
+    data.forEach((d, i) => {
+      if (d[key] == null) return;
+      if (!started) { ctx.moveTo(x(i), y(d[key])); started = true; }
+      else ctx.lineTo(x(i), y(d[key]));
+    });
+    ctx.stroke();
+
+    // Dots
+    data.forEach((d, i) => {
+      if (d[key] == null) return;
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(x(i), y(d[key]), 4, 0, Math.PI * 2); ctx.fill();
+    });
+  });
+
+  // X labels
+  ctx.fillStyle = '#484f58'; ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+  data.forEach((d, i) => ctx.fillText(d.date.slice(5), x(i), H - pad.b + 15));
+}
+
 // ── DRAW CHARTS ──
 drawLine('miChart', rows, 'mi', '#3fb950', 85, false);
-drawLine('crapChart', rows, 'crap', '#f85149', null, true);
+drawMultiLine('crapChart', rows, ['crapApp', 'crapTest'], ['#f85149', '#f8514988']);
 drawLine('deadChart', rows, 'dead', '#d29922', 0, true);
 drawLine('dupChart', rows, 'dup', '#bc8cff', null, true);
 
 // ── DATA TABLE ──
 // "higher" means bigger is better (MI). Everything else: smaller is better.
 const higherIsBetter = new Set(['mi']);
-const numericKeys = new Set(['loc', 'dead', 'mi', 'crap', 'dup']);
+const numericKeys = new Set(['loc', 'dead', 'mi', 'crapApp', 'crapTest', 'dup']);
 const cols = [
   { key: 'date', label: 'Date', fmt: v => v },
   { key: 'loc', label: 'LOC', fmt: v => v.toLocaleString() },
   { key: 'dead', label: 'Dead %', fmt: v => v + '%' },
   { key: 'mi', label: 'MI', fmt: v => v },
-  { key: 'crap', label: 'Max CRAP', fmt: v => v },
+  { key: 'crapApp', label: 'CRAP (app)', fmt: v => v == null ? '—' : v },
+  { key: 'crapTest', label: 'CRAP (test)', fmt: v => v == null ? '—' : v },
   { key: 'dup', label: 'Dup %', fmt: v => v + '%' },
   { key: 'note', label: 'Notes', fmt: v => v },
 ];
 
 function cellClass(key, current, previous) {
-  if (current === previous) return '';
+  if (current == null || previous == null || current === previous) return '';
   const better = higherIsBetter.has(key) ? current > previous : current < previous;
   return better ? 'up' : 'down';
 }
