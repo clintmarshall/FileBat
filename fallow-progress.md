@@ -47,6 +47,7 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 | 2026-07-04 | 4233 | 1 (6.7%) | 3 (20.0%) | 1.6 | 3 | 92.2 | N/R | 106 | 17.0% | 9 | Fallow OOM fix — ignorePatterns, .gitignore tightened, unit tests added |
 | 2026-07-04 | 4373 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.4 | 306.0 | 675 | 17.2% | 10 | Config consolidation — drop fallow.toml, add ignoreExports, main.css ignored |
 | 2026-07-04 | 4182 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.2 | 306.0 | 0 | 0.0% | 0 | Extracted test factories — selectFirstRow/startRename/openContextMenu (dup 17.2%→0%) |
+| 2026-07-04 | 4205 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.1 | 56.0 | 0 | 0.0% | 0 | Refactored playwright.tauri.cjs — 10 named functions (CRAP 306→56) |
 
 ## Changes (2026-07-03 — Noise Removal)
 
@@ -104,6 +105,15 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 - **`src/test/helpers.ts`** — Added `selectFirstRow()`, `startRename()`, `openContextMenu()`, `openGlobalContextMenu()`, `dispatchKey()` factories.
 - **`src/app.unit.test.ts`** — Refactored 1408 → 1166 LOC. Replaced 20+ instances of repeated boot+select+F2+right-click patterns with factory calls.
 - **Result:** Duplication 675 lines (17.2%) → 0 lines (0.0%). Clone groups 10 → 0. MI 93.4 → 93.2 (stable).
+
+## Changes (2026-07-04 — E2E Script Refactor)
+
+- **`playwright.tauri.cjs`** — Extracted 10 named functions from 259-line IIFE:
+  - `cleanupWebViewCache()`, `killStaleProcesses()`, `launchApp()` — setup
+  - `connectBrowser()` — CDP connection
+  - `waitForAppReady()`, `setupPageOverrides()`, `setupConsoleLogging()` — page init
+  - `testAppInit()`, `testFileList()`, `testAnalyticsToggle()`, `testScanPath()`, `testDiskUsageScan()` — tests
+- **Result:** Max CRAP 306 → 56. Cyclomatic 17 → 7. Cognitive 23 → 8. MI 93.2 → 93.1 (stable).
 
 ## Baseline Details (2026-07-03)
 
