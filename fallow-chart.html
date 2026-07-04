@@ -114,7 +114,7 @@ function drawXLabels(ctx, data, W, H, pad, cw) {
 // Draw a single line where each segment is green or red based on threshold
 function drawThresholdLine(canvasId, data, key, isTestLine) {
   const { c, ctx, W, H } = initCanvas(canvasId);
-  const pad = { t: 10, r: 15, b: 30, l: 45 };
+  const pad = { t: 25, r: 15, b: 30, l: 45 };
   const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
 
   const vals = data.map(d => d[key]).filter(v => v != null);
@@ -156,7 +156,7 @@ function drawThresholdLine(canvasId, data, key, isTestLine) {
 
     // Value label
     ctx.fillStyle = '#c9d1d9'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
-    ctx.fillText(d[key].toString(), x(i), y(d[key]) - (isTestLine ? 8 : 10));
+    ctx.fillText(d[key].toString(), x(i), y(d[key]) + (isTestLine ? 12 : 14));
 
     prev = { i, ...d };
   });
@@ -167,7 +167,7 @@ function drawThresholdLine(canvasId, data, key, isTestLine) {
 // Draw multiple lines on one canvas (CRAP chart)
 function drawThresholdMultiLine(canvasId, data, keys, testKeys) {
   const { c, ctx, W, H } = initCanvas(canvasId);
-  const pad = { t: 10, r: 15, b: 30, l: 45 };
+  const pad = { t: 25, r: 15, b: 30, l: 45 };
   const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
 
   const allVals = [];
