@@ -14,8 +14,8 @@
   .legend { display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: #8b949e; }
   .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
   .legend .mi::before { background: #3fb950; }
-  .legend .crapApp::before { background: #f85149; }
-  .legend .crapTest::before { background: #f8514988; }
+  .legend .crapApp::before { background: #39d2c0; }
+  .legend .crapTest::before { background: #39d2c088; }
   .legend .dead::before { background: #d29922; }
   .legend .dup::before { background: #bc8cff; }
   .data-table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; font-size: 0.8rem; }
@@ -191,7 +191,7 @@ function drawMultiLine(canvasId, data, keys, colors) {
 
 // ── DRAW CHARTS ──
 drawLine('miChart', rows, 'mi', '#3fb950', 85, false);
-drawMultiLine('crapChart', rows, ['crapApp', 'crapTest'], ['#f85149', '#f8514988']);
+drawMultiLine('crapChart', rows, ['crapApp', 'crapTest'], ['#39d2c0', '#39d2c088']);
 drawLine('deadChart', rows, 'dead', '#d29922', 0, true);
 drawLine('dupChart', rows, 'dup', '#bc8cff', null, true);
 
