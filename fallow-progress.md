@@ -42,6 +42,7 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 | 2026-07-03 | 2403 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 210.0 | 81 | 3.8% | 6 | Extracted utils.ts — formatSize/formatDate/entryIcon shared module |
 | 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | Final: handleActionKeys, startRename, test dedup. Done. |
 | 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | camelCase standardisation — #[serde(rename_all)] on 9 structs |
+| 2026-07-04 | 4233 | 1 (6.7%) | 3 (20.0%) | 1.6 | 3 | 92.2 | N/R | 106 | 17.0% | 9 | Fallow OOM fix — ignorePatterns, .gitignore tightened, unit tests added |
 
 ## Changes (2026-07-03 — Noise Removal)
 
@@ -77,6 +78,15 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 - Refactored `app.integration.test.ts` — 474 LOC → 277 LOC, eliminated repeated beforeEach/bootApp
 - Refactored `keyboard.test.ts` — uses shared helpers
 - Added 6 keyboard navigation tests (Ctrl+A, ArrowDown, ArrowUp, Ctrl+C, Ctrl+X, Delete)
+
+## Changes (2026-07-04 — Fallow OOM Fix + Unit Tests)
+
+- **`.fallowrc.json`** — Added top-level `ignorePatterns` for `target/`, `node_modules/`, `dist/`, `coverage/`, `html/`, `frontend-dist/`, `src/src-tauri/`, `*.old`, `*.lock`. Fallow was parsing 1.5M of HTML coverage reports as source code → OOM.
+- **`.gitignore`** — Added `coverage/`, `html/`, `*.old` so generated artifacts stay out of git.
+- **`src/app.unit.test.ts`** — New file (1408 LOC). Introduced 9 clone groups (106 lines) of test duplication within the same file — future refactor target.
+- **Dead exports** — `src/test/helpers.ts` exports `registeredHandlers`, `createDom`, `mockTauriApi` with no known consumers (43% dead code in that file).
+- **Duplicate export** — `bootApp` defined in both `src/test/boot.ts` and `src/test/helpers.ts`.
+- **LOC jump** — 2394 → 4233. Expected: unit tests doubled the analyzed source. MI held at 92.2 despite the volume.
 
 ## Baseline Details (2026-07-03)
 
