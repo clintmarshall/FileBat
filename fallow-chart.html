@@ -13,10 +13,9 @@
   .card canvas { width: 100%; height: 200px; }
   .legend { display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: #8b949e; }
   .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-  .legend .mi::before { background: #3fb950; }
-  .legend .crap::before { background: #f85149; }
-  .legend .dead::before { background: #d29922; }
-  .legend .dup::before { background: #bc8cff; }
+  .legend .good::before { background: #3fb950; }
+  .legend .bad::before { background: #f85149; }
+  .legend .test::before { background: #3fb950; border: 2px dotted #3fb950; border-radius: 0; }
   .data-table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; font-size: 0.8rem; }
   .data-table th, .data-table td { padding: 0.4rem 0.6rem; border: 1px solid #30363d; text-align: right; }
   .data-table th { color: #8b949e; font-weight: 600; }
@@ -29,24 +28,24 @@
 <h1>📈 Fallow Progression</h1>
 <div class="grid">
   <div class="card">
-    <h2>Maintainability Index (target ≥ 85)</h2>
+    <h2>Maintainability Index (≥ 85 good)</h2>
     <canvas id="miChart"></canvas>
-    <div class="legend"><span class="mi">MI Score</span></div>
+    <div class="legend"><span class="good">Good (≥85)</span><span class="bad">Below threshold</span></div>
   </div>
   <div class="card">
-    <h2>Max CRAP Score (lower is better)</h2>
+    <h2>CRAP Score (&lt; 30 good)</h2>
     <canvas id="crapChart"></canvas>
-    <div class="legend"><span class="crap">Max CRAP</span></div>
+    <div class="legend"><span class="good">App (&lt;30)</span><span class="test">Test (dotted)</span><span class="bad">≥30 red</span></div>
   </div>
   <div class="card">
-    <h2>Dead Files % (target 0%)</h2>
+    <h2>Dead Files % (0% target)</h2>
     <canvas id="deadChart"></canvas>
-    <div class="legend"><span class="dead">Dead Files %</span></div>
+    <div class="legend"><span class="good">0%</span><span class="bad">&gt;0%</span></div>
   </div>
   <div class="card">
-    <h2>Duplication % (lower is better)</h2>
+    <h2>Duplication % (0% target)</h2>
     <canvas id="dupChart"></canvas>
-    <div class="legend"><span class="dup">Dup %</span></div>
+    <div class="legend"><span class="good">0%</span><span class="bad">&gt;0%</span></div>
   </div>
 </div>
 
@@ -55,35 +54,46 @@
 <script>
 // ── DATA ──
 const rows = [
-  { date: '2026-07-03T09:00', loc: 2840, dead: 43.8, mi: 79.1, crap: 702, dup: 9.8, note: 'Baseline' },
-  { date: '2026-07-03T09:15', loc: 2192, dead: 0.0, mi: 94.9, crap: 210, dup: 10.0, note: 'Noise removed' },
-  { date: '2026-07-03T11:20', loc: 2440, dead: 0.0, mi: 94.4, crap: 210, dup: 6.6, note: 'Refactored keyboard, context menu, render, tests' },
-  { date: '2026-07-03T11:35', loc: 2403, dead: 0.0, mi: 93.8, crap: 210, dup: 3.8, note: 'Extracted utils.ts — shared formatSize/formatDate/entryIcon' },
-  { date: '2026-07-03T11:50', loc: 2394, dead: 0.0, mi: 93.9, crap: 210, dup: 1.7, note: 'Final: handleActionKeys, startRename, test dedup. Done.' },
-  { date: '2026-07-03T12:30', loc: 2394, dead: 0.0, mi: 93.9, crap: 210, dup: 1.7, note: 'camelCase standardisation — #[serde(rename_all)] on 9 structs' },
+  { date: '2026-07-03T09:00', loc: 2840, dead: 43.8, mi: 79.1, crapApp: 172, crapTest: 210, dup: 9.8, note: 'Baseline' },
+  { date: '2026-07-03T09:15', loc: 2192, dead: 0.0, mi: 94.9, crapApp: 172, crapTest: 210, dup: 10.0, note: 'Noise removed' },
+  { date: '2026-07-03T11:20', loc: 2440, dead: 0.0, mi: 94.4, crapApp: 43, crapTest: 210, dup: 6.6, note: 'Refactored keyboard, context menu, render, tests' },
+  { date: '2026-07-03T11:35', loc: 2403, dead: 0.0, mi: 93.8, crapApp: 43, crapTest: 210, dup: 3.8, note: 'Extracted utils.ts — shared formatSize/formatDate/entryIcon' },
+  { date: '2026-07-03T11:50', loc: 2394, dead: 0.0, mi: 93.9, crapApp: 43, crapTest: 210, dup: 1.7, note: 'Final: handleActionKeys, startRename, test dedup. Done.' },
+  { date: '2026-07-03T12:30', loc: 2394, dead: 0.0, mi: 93.9, crapApp: 43, crapTest: 210, dup: 1.7, note: 'camelCase standardisation — #[serde(rename_all)] on 9 structs' },
+  { date: '2026-07-03T20:20', loc: 2384, dead: 0.0, mi: 93.9, crapApp: 43, crapTest: 132, dup: 0.8, note: 'Fix scan events — 4 bugs (overflow, serde rename, timing, CSS)' },
+  { date: '2026-07-03T21:35', loc: 2522, dead: 0.0, mi: 93.8, crapApp: 43, crapTest: 306, dup: 0.8, note: 'Fix entryType camelCase regression + contract/E2E tests' },
+  { date: '2026-07-04T10:00', loc: 4233, dead: 6.7, mi: 92.2, crapApp: 43, crapTest: 306, dup: 17.0, note: 'Fallow OOM fix — ignorePatterns, .gitignore, unit tests added' },
+  { date: '2026-07-04T14:00', loc: 4373, dead: 0.0, mi: 93.4, crapApp: 10.2, crapTest: 306, dup: 17.2, note: 'Config consolidation — drop fallow.toml, ignoreExports, main.css ignored' },
+  { date: '2026-07-04T16:00', loc: 4182, dead: 0.0, mi: 93.2, crapApp: 10.2, crapTest: 306, dup: 0.0, note: 'Extracted test factories — dup 17.2%→0%, LOC 4373→4182' },
+  { date: '2026-07-04T18:00', loc: 4205, dead: 0.0, mi: 93.1, crapApp: 10.2, crapTest: 56, dup: 0.0, note: 'Refactored playwright.tauri.cjs — 10 named functions (CRAP 306→56)' },
 ];
 
+// ── THRESHOLDS ──
+// isGood(value) returns true if the value is in the "good" zone
+const THRESHOLDS = {
+  mi:       v => v >= 85,
+  crapApp:  v => v < 30,
+  crapTest: v => v < 30,
+  dead:     v => v === 0,
+  dup:      v => v === 0,
+};
+
+const GREEN = '#3fb950';
+const RED   = '#f85149';
+
 // ── RENDER HELPERS ──
-function drawLine(canvasId, data, key, color, target, invert) {
+function initCanvas(canvasId) {
   const c = document.getElementById(canvasId);
   const ctx = c.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   c.width = c.clientWidth * dpr;
   c.height = c.clientHeight * dpr;
   ctx.scale(dpr, dpr);
-  const W = c.clientWidth, H = c.clientHeight;
-  const pad = { t: 10, r: 15, b: 30, l: 45 };
-  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+  return { c, ctx, W: c.clientWidth, H: c.clientHeight };
+}
 
-  const vals = data.map(d => d[key]);
-  const lo = Math.min(...vals, 0);
-  const hi = Math.max(...vals, target || 0);
-  const range = hi - lo || 1;
-
-  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
-  const y = (v) => pad.t + ch - ((v - lo) / range) * ch;
-
-  // Grid
+function drawGrid(ctx, W, H, pad, hi, lo, range) {
+  const ch = H - pad.t - pad.b;
   ctx.strokeStyle = '#21262d';
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
@@ -93,58 +103,139 @@ function drawLine(canvasId, data, key, color, target, invert) {
     ctx.fillStyle = '#484f58'; ctx.font = '10px system-ui'; ctx.textAlign = 'right';
     ctx.fillText(val.toFixed(0), pad.l - 6, yy + 3);
   }
+}
 
-  // Target line
-  if (target !== null && target !== undefined) {
-    const ty = y(target);
-    ctx.setLineDash([4, 4]); ctx.strokeStyle = invert ? '#3fb95066' : '#f8514966';
-    ctx.beginPath(); ctx.moveTo(pad.l, ty); ctx.lineTo(W - pad.r, ty); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = invert ? '#3fb95088' : '#f8514988';
-    ctx.textAlign = 'left'; ctx.fillText(`target ${target}`, W - pad.r - 50, ty - 5);
-  }
-
-  // Line
-  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
-  ctx.beginPath();
-  data.forEach((d, i) => { i === 0 ? ctx.moveTo(x(i), y(d[key])) : ctx.lineTo(x(i), y(d[key])); });
-  ctx.stroke();
-
-  // Dots
-  data.forEach((d, i) => {
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x(i), y(d[key]), 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#c9d1d9'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
-    ctx.fillText(d[key].toString(), x(i), y(d[key]) - 10);
-  });
-
-  // X labels
+function drawXLabels(ctx, data, W, H, pad, cw) {
+  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
   ctx.fillStyle = '#484f58'; ctx.font = '9px system-ui'; ctx.textAlign = 'center';
   data.forEach((d, i) => ctx.fillText(d.date.slice(5), x(i), H - pad.b + 15));
 }
 
+// Draw a single line where each segment is green or red based on threshold
+function drawThresholdLine(canvasId, data, key, isTestLine) {
+  const { c, ctx, W, H } = initCanvas(canvasId);
+  const pad = { t: 25, r: 15, b: 30, l: 45 };
+  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+  const vals = data.map(d => d[key]).filter(v => v != null);
+  const lo = Math.min(...vals, 0);
+  const hi = Math.max(...vals);
+  const range = hi - lo || 1;
+
+  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
+  const y = (v) => pad.t + ch - ((v - lo) / range) * ch;
+
+  drawGrid(ctx, W, H, pad, hi, lo, range);
+
+  const isGood = THRESHOLDS[key] || (() => true);
+
+  // Draw segments between consecutive valid points
+  let prev = null;
+  data.forEach((d, i) => {
+    if (d[key] == null) return;
+
+    if (prev !== null) {
+      // Segment colour: red if either endpoint is bad
+      const segBad = !isGood(d[key]) || !isGood(prev[key]);
+      ctx.strokeStyle = segBad ? RED : GREEN;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash(isTestLine ? [5, 4] : []);
+      ctx.beginPath();
+      ctx.moveTo(x(prev.i), y(prev[key]));
+      ctx.lineTo(x(i), y(d[key]));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Dot colour: red if this point is bad
+    const dotBad = !isGood(d[key]);
+    ctx.fillStyle = dotBad ? RED : GREEN;
+    ctx.beginPath();
+    ctx.arc(x(i), y(d[key]), isTestLine ? 3 : 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Value label
+    ctx.fillStyle = '#c9d1d9'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(d[key].toString(), x(i), y(d[key]) + (isTestLine ? 12 : 14));
+
+    prev = { i, ...d };
+  });
+
+  drawXLabels(ctx, data, W, H, pad, cw);
+}
+
+// Draw multiple lines on one canvas (CRAP chart)
+function drawThresholdMultiLine(canvasId, data, keys, testKeys) {
+  const { c, ctx, W, H } = initCanvas(canvasId);
+  const pad = { t: 25, r: 15, b: 30, l: 45 };
+  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+  const allVals = [];
+  data.forEach(d => keys.forEach(k => { if (d[k] != null) allVals.push(d[k]); }));
+  const lo = Math.min(...allVals, 0);
+  const hi = Math.max(...allVals);
+  const range = hi - lo || 1;
+
+  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
+  const y = (v) => pad.t + ch - ((v - lo) / range) * ch;
+
+  drawGrid(ctx, W, H, pad, hi, lo, range);
+
+  keys.forEach(key => {
+    const isTest = testKeys.has(key);
+    const isGood = THRESHOLDS[key] || (() => true);
+
+    let prev = null;
+    data.forEach((d, i) => {
+      if (d[key] == null) return;
+
+      if (prev !== null) {
+        const segBad = !isGood(d[key]) || !isGood(prev[key]);
+        ctx.strokeStyle = segBad ? RED : GREEN;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash(isTest ? [5, 4] : []);
+        ctx.beginPath();
+        ctx.moveTo(x(prev.i), y(prev[key]));
+        ctx.lineTo(x(i), y(d[key]));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      const dotBad = !isGood(d[key]);
+      ctx.fillStyle = dotBad ? RED : GREEN;
+      ctx.beginPath();
+      ctx.arc(x(i), y(d[key]), isTest ? 3 : 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      prev = { i, ...d };
+    });
+  });
+
+  drawXLabels(ctx, data, W, H, pad, cw);
+}
+
 // ── DRAW CHARTS ──
-drawLine('miChart', rows, 'mi', '#3fb950', 85, false);
-drawLine('crapChart', rows, 'crap', '#f85149', null, true);
-drawLine('deadChart', rows, 'dead', '#d29922', 0, true);
-drawLine('dupChart', rows, 'dup', '#bc8cff', null, true);
+drawThresholdLine('miChart', rows, 'mi', false);
+drawThresholdMultiLine('crapChart', rows, ['crapApp', 'crapTest'], new Set(['crapTest']));
+drawThresholdLine('deadChart', rows, 'dead', false);
+drawThresholdLine('dupChart', rows, 'dup', false);
 
 // ── DATA TABLE ──
-// "higher" means bigger is better (MI). Everything else: smaller is better.
 const higherIsBetter = new Set(['mi']);
-const numericKeys = new Set(['loc', 'dead', 'mi', 'crap', 'dup']);
+const numericKeys = new Set(['loc', 'dead', 'mi', 'crapApp', 'crapTest', 'dup']);
 const cols = [
   { key: 'date', label: 'Date', fmt: v => v },
   { key: 'loc', label: 'LOC', fmt: v => v.toLocaleString() },
   { key: 'dead', label: 'Dead %', fmt: v => v + '%' },
   { key: 'mi', label: 'MI', fmt: v => v },
-  { key: 'crap', label: 'Max CRAP', fmt: v => v },
+  { key: 'crapApp', label: 'CRAP (app)', fmt: v => v == null ? '—' : v },
+  { key: 'crapTest', label: 'CRAP (test)', fmt: v => v == null ? '—' : v },
   { key: 'dup', label: 'Dup %', fmt: v => v + '%' },
   { key: 'note', label: 'Notes', fmt: v => v },
 ];
 
 function cellClass(key, current, previous) {
-  if (current === previous) return '';
+  if (current == null || previous == null || current === previous) return '';
   const better = higherIsBetter.has(key) ? current > previous : current < previous;
   return better ? 'up' : 'down';
 }

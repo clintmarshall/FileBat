@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   resetTauriMocks,
-  bootApp,
   flushPromises,
   emitEvent,
   registeredHandlers,
 } from './test/helpers';
+import { bootApp } from './test/boot';
 import type { TauriMockInvoke } from './test/helpers';
 
 // ─── Tests ───
@@ -132,8 +132,11 @@ describe('Analytics — Disk Usage Scan', () => {
     await flushPromises();
 
     emitEvent('scan:chunk', {
-      type: 'folder_usage',
-      usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
+      scanId: 'test_scan',
+      data: {
+        type: 'folder_usage',
+        usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
+      },
     });
     await flushPromises();
 
@@ -258,5 +261,270 @@ describe('Tauri IPC — Argument Casing', () => {
     await bootAndScan('duplicates');
     const args = await getInvokeCall('start_find_duplicates');
     expect(args).toHaveProperty('path');
+  });
+});
+
+// ─── Large Files Scan ───
+
+describe('Analytics — Large Files Scan', () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it('switches to large-files tab and invokes start_find_large_files', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'start_find_large_files') return 'scan-large';
+      return [];
+    });
+
+    document.getElementById('btn-analytics')!.click();
+    await flushPromises();
+
+    // Switch to large-files tab
+    document.querySelector('[data-tab="large-files"]')!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+    await flushPromises();
+
+    document.getElementById('btn-scan')!.click();
+    await flushPromises();
+
+    const { invoke } = await import('@tauri-apps/api/core');
+    expect(invoke).toHaveBeenCalledWith(
+      'start_find_large_files',
+      expect.objectContaining({ path: 'C:\\', minSize: expect.any(Number), maxResults: 100 }),
+    );
+  });
+
+  it('scan:chunk with large_file type renders results', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'start_find_large_files') return 'scan-large';
+      return [];
+    });
+
+    document.getElementById('btn-analytics')!.click();
+    await flushPromises();
+
+    // Switch to large-files tab
+    document.querySelector('[data-tab="large-files"]')!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+    await flushPromises();
+
+    document.getElementById('btn-scan')!.click();
+    await flushPromises();
+
+    emitEvent('scan:chunk', {
+      scanId: 'scan-large',
+      data: {
+        type: 'large_file',
+        entry: {
+          name: 'video.mp4',
+          path: 'C:\\Videos\\video.mp4',
+          size: 1073741824,
+          modified: '2024-06-15T12:00:00Z',
+          entryType: 'File',
+          extension: '.mp4',
+        },
+      },
+    });
+    await flushPromises();
+
+    const results = document.getElementById('large-files-results')!;
+    expect(results.innerHTML).toContain('video.mp4');
+    expect(results.innerHTML).toContain('1.0 GB');
+  });
+
+  it('scan:chunk with duplicate_group type renders results', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'start_find_duplicates') return 'scan-dup';
+      return [];
+    });
+
+    document.getElementById('btn-analytics')!.click();
+    await flushPromises();
+
+    // Switch to duplicates tab
+    document.querySelector('[data-tab="duplicates"]')!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+    await flushPromises();
+
+    document.getElementById('btn-scan')!.click();
+    await flushPromises();
+
+    emitEvent('scan:chunk', {
+      scanId: 'scan-dup',
+      data: {
+        type: 'duplicate_group',
+        group: {
+          hash: 'abc123',
+          sizeEach: 1024,
+          files: ['C:\\a\\file.txt', 'C:\\b\\file.txt'],
+          wastedSpace: 1024,
+        },
+      },
+    });
+    await flushPromises();
+
+    const results = document.getElementById('duplicates-results')!;
+    expect(results.innerHTML).toContain('file.txt');
+    expect(results.innerHTML).toContain('1.0 KB');
+  });
+});
+
+// ─── Paste / New Folder ───
+
+describe('File Operations — Paste', () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it('paste after copy invokes copy_items', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'list_dir') return [{
+        name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '',
+        entryType: 'File', extension: '.txt',
+      }];
+      if (cmd === 'copy_items') return Promise.resolve();
+      return [];
+    });
+
+    // Select and copy
+    const rows = document.querySelectorAll('.file-item');
+    rows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flushPromises();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+
+    // Paste via Ctrl+V
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+
+    const { invoke } = await import('@tauri-apps/api/core');
+    expect(invoke).toHaveBeenCalledWith(
+      'copy_items',
+      expect.objectContaining({ destDir: 'C:\\' }),
+    );
+  });
+});
+
+// ─── Scan Cancel / Reset ───
+
+describe('Analytics — Cancel Scan', () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it('cancel button invokes cancel_scan', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'start_scan_usage') return 'scan-123';
+      if (cmd === 'cancel_scan') return Promise.resolve();
+      return [];
+    });
+
+    document.getElementById('btn-analytics')!.click();
+    await flushPromises();
+    document.getElementById('btn-scan')!.click();
+    await flushPromises();
+
+    // Click cancel
+    document.getElementById('btn-cancel-scan')!.click();
+    await flushPromises();
+
+    const { invoke } = await import('@tauri-apps/api/core');
+    expect(invoke).toHaveBeenCalledWith('cancel_scan', { scanId: 'scan-123' });
+  });
+
+  it('scan:error resets UI', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'start_scan_usage') return 'scan-123';
+      return [];
+    });
+
+    document.getElementById('btn-analytics')!.click();
+    await flushPromises();
+    document.getElementById('btn-scan')!.click();
+    await flushPromises();
+
+    expect(document.getElementById('analytics-progress')!.classList.contains('hidden')).toBe(false);
+
+    emitEvent('scan:error', { message: 'Access denied' });
+    await flushPromises();
+
+    expect(document.getElementById('analytics-progress')!.classList.contains('hidden')).toBe(true);
+    expect((document.getElementById('btn-scan')! as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// ─── Forward Navigation ───
+
+describe('Navigation — Forward', () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it('Back then Forward restores path', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'list_dir') return [{
+        name: 'docs', path: 'C:\\docs', size: 0, modified: '',
+        entryType: 'Folder', extension: null,
+      }];
+      return [];
+    });
+
+    const breadcrumb = document.getElementById('breadcrumb')!;
+
+    // Navigate into folder
+    const rows = document.querySelectorAll('.file-item');
+    rows[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await flushPromises();
+    expect(breadcrumb.textContent).toBe('C:\\docs');
+
+    // Go back
+    document.getElementById('btn-back')!.click();
+    await flushPromises();
+    expect(breadcrumb.textContent).toBe('C:\\');
+
+    // Go forward — should restore C:\docs
+    document.getElementById('btn-forward')!.click();
+    await flushPromises();
+    expect(breadcrumb.textContent).toBe('C:\\docs');
+  });
+});
+
+// ─── Scan — No Path Error ───
+
+describe('Analytics — Scan Validation', () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it('shows error when no path is set', async () => {
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [];
+      return [];
+    });
+
+    document.getElementById('btn-analytics')!.click();
+    await flushPromises();
+
+    // Clear the scan path
+    const scanPath = document.getElementById('scan-path')! as HTMLInputElement;
+    scanPath.value = '';
+
+    document.getElementById('btn-scan')!.click();
+    await flushPromises();
+
+    const status = document.getElementById('status-info')!;
+    expect(status.textContent).toContain('enter a path');
   });
 });

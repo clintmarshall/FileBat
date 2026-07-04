@@ -21,7 +21,8 @@
 | Avg Cycl | `avg cyclomatic X` |
 | P90 Cycl | `p90 cyclomatic X` |
 | MI | `maintainability X (grade)` |
-| Max CRAP | Highest CRAP from `● High complexity functions` |
+| Max CRAP (app) | Highest CRAP from non-test files in `● High complexity functions` |
+| Max CRAP (test) | Highest CRAP from test/E2E files in `● High complexity functions` |
 | Dup Lines | `X lines (Y%) duplicated` from `● Duplicates` |
 | Dup % | Same as above |
 | Clone Groups | Count of `dup:*` entries under `● Duplicates` |
@@ -34,14 +35,20 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 
 ## Progression Table
 
-| Date | Loc | Dead Files | Dead Exports | Avg Cycl | P90 Cycl | MI | Max CRAP | Dup Lines | Dup % | Clone Groups | Notes |
-|------------|------:|----------:|-------------:|---------:|---------:|----:|---------:|----------:|------:|-------------:|-------|
-| 2026-07-03 | 2840 | 7 (43.8%) | 0 (0.0%) | 2.1 | 4 | 79.1 | 702.0 | 208 | 9.8% | 11 | Baseline — fallow first run |
-| 2026-07-03 | 2192 | 0 (0.0%) | 0 (0.0%) | 1.9 | 3 | 94.9 | 210.0 | 208 | 10.0% | 11 | Noise removed — build artifacts ignored, playwright added to deps |
-| 2026-07-03 | 2440 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 94.4 | 210.0 | 144 | 6.6% | 10 | Refactored: keyboard (CRAP 172→43), context menu, renderEntries, test dedup |
-| 2026-07-03 | 2403 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 210.0 | 81 | 3.8% | 6 | Extracted utils.ts — formatSize/formatDate/entryIcon shared module |
-| 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | Final: handleActionKeys, startRename, test dedup. Done. |
-| 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 210.0 | 35 | 1.7% | 2 | camelCase standardisation — #[serde(rename_all)] on 9 structs |
+| Date | Loc | Dead Files | Dead Exports | Avg Cycl | P90 Cycl | MI | CRAP (app) | CRAP (test) | Dup Lines | Dup % | Clone Groups | Notes |
+|------------|------:|----------:|-------------:|---------:|---------:|----:|-----------:|------------:|----------:|------:|-------------:|-------|
+| 2026-07-03 | 2840 | 7 (43.8%) | 0 (0.0%) | 2.1 | 4 | 79.1 | 172.0 | 210.0 | 208 | 9.8% | 11 | Baseline — fallow first run |
+| 2026-07-03 | 2192 | 0 (0.0%) | 0 (0.0%) | 1.9 | 3 | 94.9 | 172.0 | 210.0 | 208 | 10.0% | 11 | Noise removed — build artifacts ignored, playwright added to deps |
+| 2026-07-03 | 2440 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 94.4 | 43.0 | 210.0 | 144 | 6.6% | 10 | Refactored: keyboard (CRAP 172→43), context menu, renderEntries, test dedup |
+| 2026-07-03 | 2403 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 43.0 | 210.0 | 81 | 3.8% | 6 | Extracted utils.ts — formatSize/formatDate/entryIcon shared module |
+| 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 43.0 | 210.0 | 35 | 1.7% | 2 | Final: handleActionKeys, startRename, test dedup. Done. |
+| 2026-07-03 | 2394 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 43.0 | 210.0 | 35 | 1.7% | 2 | camelCase standardisation — #[serde(rename_all)] on 9 structs |
+| 2026-07-03 | 2384 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.9 | 43.0 | 132.0 | 17 | 0.8% | 1 | Fix scan events — 4 bugs (overflow, serde rename, timing, CSS) |
+| 2026-07-03 | 2522 | 0 (0.0%) | 0 (0.0%) | 1.9 | 4 | 93.8 | 43.0 | 306.0 | 17 | 0.8% | 1 | Fix entryType camelCase regression + contract/E2E tests |
+| 2026-07-04 | 4233 | 1 (6.7%) | 3 (20.0%) | 1.6 | 3 | 92.2 | — | — | 106 | 17.0% | 9 | Fallow OOM fix — ignorePatterns, .gitignore tightened, unit tests added |
+| 2026-07-04 | 4373 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.4 | 10.2 | 306.0 | 675 | 17.2% | 10 | Config consolidation — drop fallow.toml, add ignoreExports, main.css ignored |
+| 2026-07-04 | 4182 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.2 | 10.2 | 306.0 | 0 | 0.0% | 0 | Extracted test factories — selectFirstRow/startRename/openContextMenu (dup 17.2%→0%) |
+| 2026-07-04 | 4205 | 0 (0.0%) | 0 (0.0%) | 1.7 | 3 | 93.1 | 10.2 | 56.0 | 0 | 0.0% | 0 | Refactored playwright.tauri.cjs — 10 named functions (CRAP 306→56) |
 
 ## Changes (2026-07-03 — Noise Removal)
 
@@ -78,6 +85,37 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 - Refactored `keyboard.test.ts` — uses shared helpers
 - Added 6 keyboard navigation tests (Ctrl+A, ArrowDown, ArrowUp, Ctrl+C, Ctrl+X, Delete)
 
+## Changes (2026-07-04 — Fallow OOM Fix + Unit Tests)
+
+- **`.fallowrc.json`** — Added top-level `ignorePatterns` for `target/`, `node_modules/`, `dist/`, `coverage/`, `html/`, `frontend-dist/`, `src/src-tauri/`, `*.old`, `*.lock`. Fallow was parsing 1.5M of HTML coverage reports as source code → OOM.
+- **`.gitignore`** — Added `coverage/`, `html/`, `*.old` so generated artifacts stay out of git.
+- **`src/app.unit.test.ts`** — New file (1408 LOC). Introduced 9 clone groups (106 lines) of test duplication within the same file — future refactor target.
+- **Dead exports** — `src/test/helpers.ts` exports `registeredHandlers`, `createDom`, `mockTauriApi` with no known consumers (43% dead code in that file).
+- **Duplicate export** — `bootApp` defined in both `src/test/boot.ts` and `src/test/helpers.ts`.
+- **LOC jump** — 2394 → 4233. Expected: unit tests doubled the analyzed source. MI held at 92.2 despite the volume.
+
+## Changes (2026-07-04 — Config Consolidation)
+
+- **Dropped `fallow.toml`** — Superseded by `.fallowrc.json`.
+- **Added `src/styles/main.css` to `ignorePatterns`** — Eliminates the last dead-file false positive (imported via `<link>`, not JS).
+- **Added `ignoreExports`** — Suppresses dead-export warnings for `helpers.ts` test utilities (`registeredHandlers`, `createDom`, `mockTauriApi`).
+- **Result:** Dead files 6.7% → 0%. Dead exports 20% → 0%. MI 92.2 → 93.4.
+
+## Changes (2026-07-04 — Test Factory Extraction)
+
+- **`src/test/helpers.ts`** — Added `selectFirstRow()`, `startRename()`, `openContextMenu()`, `openGlobalContextMenu()`, `dispatchKey()` factories.
+- **`src/app.unit.test.ts`** — Refactored 1408 → 1166 LOC. Replaced 20+ instances of repeated boot+select+F2+right-click patterns with factory calls.
+- **Result:** Duplication 675 lines (17.2%) → 0 lines (0.0%). Clone groups 10 → 0. MI 93.4 → 93.2 (stable).
+
+## Changes (2026-07-04 — E2E Script Refactor)
+
+- **`playwright.tauri.cjs`** — Extracted 10 named functions from 259-line IIFE:
+  - `cleanupWebViewCache()`, `killStaleProcesses()`, `launchApp()` — setup
+  - `connectBrowser()` — CDP connection
+  - `waitForAppReady()`, `setupPageOverrides()`, `setupConsoleLogging()` — page init
+  - `testAppInit()`, `testFileList()`, `testAnalyticsToggle()`, `testScanPath()`, `testDiskUsageScan()` — tests
+- **Result:** Max CRAP 306 → 56. Cyclomatic 17 → 7. Cognitive 23 → 8. MI 93.2 → 93.1 (stable).
+
 ## Baseline Details (2026-07-03)
 
 ### Metrics
@@ -99,13 +137,43 @@ Open [`fallow-chart.html`](fallow-chart.html) in any browser for live charts (MI
 - Unlisted: `playwright` (imported but missing from package.json)
 
 ### Complexity — Top Offenders
-| File | Line | Cyclomatic | Cognitive | LOC | CRAP |
-|------|------|-----------:|----------:|----:|-----:|
-| `frontend-dist/assets/index-raQYeRWf.js` | :11 | 26 | 25 | 1 | 702.0 |
-| `playwright.tauri.cjs` | :45 | 14 | 17 | 227 | 210.0 |
-| `src/app.ts` | :552 | 26 | 30 | 73 | 172.0 |
-| `src/app.ts` | :129 | 14 | 19 | 45 | 56.3 |
+| File | Line | Cyclomatic | Cognitive | LOC | CRAP | Category |
+|------|------|-----------:|----------:|----:|-----:|----------|
+| `frontend-dist/assets/index-raQYeRWf.js` | :11 | 26 | 25 | 1 | 702.0 | build artifact |
+| `playwright.tauri.cjs` | :45 | 14 | 17 | 227 | 210.0 | test |
+| `src/app.ts` | :552 | 26 | 30 | 73 | 172.0 | app |
+| `src/app.ts` | :129 | 14 | 19 | 45 | 56.3 | app |
 
 ### Refactoring Targets
 1. **Score 17.7** — `frontend-dist/assets/index-raQYeRWf.js` (untested risk — build artifact, ignore)
 2. **Score 4.3** — `src/app.ts` (complexity — cognitive 30 arrow in 986-LOC file)
+
+## Changes (2026-07-03 — Fix Scan Events)
+
+**4 bugs found via instrumentation (eprintln! + MutationObserver), not guessing:**
+
+1. **Rust integer overflow** — `ancestor.components().count() - base_depth` underflowed when walkdir returned paths with fewer components than the base. The `spawn_blocking` task panicked, dropping all events. Added guard check.
+2. **Serde field rename mismatch** — `ScanChunk.data` was serialized as `"all"` but frontend read `chunk.data`. Removed `#[serde(rename = "all")]`.
+3. **Frontend timing** — `clearTabResults` called after `invoke()` returned, overwriting the table rendered by chunk events. Moved `clearTabResults` before the `invoke()` call.
+4. **CSS layout** — `.analytics-tab-content` was `display: block` with no height. Changed to `display: flex; flex-direction: column` with `flex: 1` on result containers.
+
+**Files:** `src-tauri/src/domain/models.rs`, `src-tauri/src/usecases/analytics/aggregator.rs`, `src/app.ts`, `src/app.integration.test.ts`, `src/styles/main.css`, `playwright.tauri.cjs`
+
+**Result:** Max CRAP 210.0 → 132.0 (playwright.tauri.cjs, down from removed build artifact). Dup 35 lines → 17 lines. All 92 tests pass.
+
+## Changes (2026-07-03 — Fix entryType camelCase Regression)
+
+**Bug:** `#[serde(rename_all = "camelCase")]` on `Entry` serializes `entry_type` as `entryType`, but the frontend read `entry_type` (snake_case). Every `entry_type` check returned `undefined`:
+- All entries showed file icon (📄) instead of folder (📁)
+- Double-click navigation never triggered
+- Size column showed for folders (should be blank)
+
+**Fix:** Updated frontend `Entry` interface and all usages to `entryType`.
+
+**Tests added:**
+- `entry-serialization.test.ts` — Contract test verifying Rust serialization matches frontend expectations
+- E2E — Folder icon check + double-click navigation verification
+
+**Files:** `src/app.ts`, `src/keyboard.test.ts`, `src/entry-serialization.test.ts`, `playwright.tauri.cjs`
+
+**Result:** LOC 2384 → 2522 (new test file + E2E additions). Max CRAP 132 → 306 (E2E test growth in playwright.tauri.cjs). MI 93.9 → 93.8 (stable). Dup 0.8% unchanged.

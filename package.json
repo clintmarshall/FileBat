@@ -11,15 +11,16 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node playwright.tauri.cjs",
-    "inspect:ui": "vite --port 1421" 
+    "inspect:ui": "vite --port 1421"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@vitest/coverage-v8": "^4.1.9",
     "@vitest/ui": "^4.1.9",
     "jsdom": "^29.1.1",
     "playwright": "^1",
-    "typescript": "^5",
-    "vite": "^6",
+    "typescript": "^6.0.2",
+    "vite": "^8.1.2",
     "vite-plugin-inspect": "^11.4.1",
     "vitest": "^4.1.9"
   },

@@ -140,17 +140,53 @@ export function resetTauriMocks() {
   createDom();
 }
 
-export async function bootApp(invokeImpl?: (cmd: string, args?: Record<string, unknown>) => unknown) {
-  const defaultImpl = async (cmd: string) => {
-    if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
-    return [];
-  };
+// ─── Interaction Factories ───
 
-  const { invoke } = await import('@tauri-apps/api/core');
-  (invoke as unknown as TauriMockInvoke).mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-    return invokeImpl ? invokeImpl(cmd, args) : defaultImpl(cmd);
-  });
-
-  await import('../app');
+export async function selectFirstRow() {
+  const rows = document.querySelectorAll('.file-item');
+  rows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
   await flushPromises();
 }
+
+export async function startRename() {
+  await selectFirstRow();
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+  await flushPromises();
+  return document.querySelector('.file-item.renaming input') as HTMLInputElement;
+}
+
+export async function openContextMenu(clientX = 100, clientY = 100) {
+  const rows = document.querySelectorAll('.file-item');
+  rows[0].dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true,
+    clientX,
+    clientY,
+    preventDefault: () => {},
+  }));
+  await flushPromises();
+  return document.getElementById('context-menu')!;
+}
+
+export async function openGlobalContextMenu(clientX = 100, clientY = 100) {
+  const fileList = document.getElementById('file-list')!;
+  fileList.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true,
+    clientX,
+    clientY,
+    preventDefault: () => {},
+  }));
+  await flushPromises();
+  return document.getElementById('context-menu')!;
+}
+
+export function dispatchKey(key: string, opts?: { ctrl?: boolean; shift?: boolean }) {
+  const event = new KeyboardEvent('keydown', {
+    key,
+    ctrlKey: opts?.ctrl || false,
+    shiftKey: opts?.shift || false,
+    bubbles: true,
+  });
+  document.dispatchEvent(event);
+  return flushPromises();
+}
+

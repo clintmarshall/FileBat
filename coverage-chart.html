@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Coverage Progression</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 2rem; }
+  h1 { font-size: 1.4rem; margin-bottom: 1.5rem; color: #58a6ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.2rem; }
+  .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; margin-bottom: 0.8rem; }
+  .card canvas { width: 100%; height: 200px; }
+  .legend { display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: #8b949e; }
+  .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .legend .stmt::before { background: #3fb950; }
+  .legend .branch::before { background: #d29922; }
+  .legend .meth::before { background: #58a6ff; }
+  .legend .app::before { background: #f778ba; }
+  .data-table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; font-size: 0.8rem; }
+  .data-table th, .data-table td { padding: 0.4rem 0.6rem; border: 1px solid #30363d; text-align: right; }
+  .data-table th { color: #8b949e; font-weight: 600; }
+  .data-table td:first-child { text-align: left; }
+  .up { color: #3fb950; }
+  .down { color: #f85149; }
+</style>
+</head>
+<body>
+<h1>🧪 Coverage Progression</h1>
+<div class="grid">
+  <div class="card">
+    <h2>Statement Coverage (target ≥ 80%)</h2>
+    <canvas id="stmtChart"></canvas>
+    <div class="legend"><span class="stmt">Statements %</span></div>
+  </div>
+  <div class="card">
+    <h2>Branch Coverage (target ≥ 70%)</h2>
+    <canvas id="branchChart"></canvas>
+    <div class="legend"><span class="branch">Branches %</span></div>
+  </div>
+  <div class="card">
+    <h2>Method Coverage (target ≥ 75%)</h2>
+    <canvas id="methChart"></canvas>
+    <div class="legend"><span class="meth">Methods %</span></div>
+  </div>
+  <div class="card">
+    <h2>app.ts Coverage (target ≥ 70%)</h2>
+    <canvas id="appChart"></canvas>
+    <div class="legend"><span class="app">app.ts %</span></div>
+  </div>
+</div>
+
+<table class="data-table" id="dataTable"></table>
+
+<script>
+// ── DATA ──
+const rows = [
+  { date: '2026-07-03T22:00', stmt: 56, branch: 35, meth: 55, app: 53, note: 'Baseline — utils 100%, helpers 92%, app.ts 271/509' },
+  { date: '2026-07-03T22:02', stmt: 76, branch: 60, meth: 72, app: 74, note: 'Unit tests — context menu, selection, rename, file ops, action keys, nav, init error' },
+  { date: '2026-07-03T22:20', stmt: 93, branch: 81, meth: 89, app: 93, note: 'Round 2 — large/dup scans, paste move, newFolder, snapshot, history, error paths' },
+];
+
+// ── RENDER HELPERS ──
+function drawLine(canvasId, data, key, color, target) {
+  const c = document.getElementById(canvasId);
+  const ctx = c.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr;
+  c.height = c.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  const W = c.clientWidth, H = c.clientHeight;
+  const pad = { t: 10, r: 15, b: 30, l: 45 };
+  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+  const vals = data.map(d => d[key]);
+  const lo = Math.min(...vals, 0);
+  const hi = Math.max(...vals, 100);
+  const range = hi - lo || 1;
+
+  const x = (i) => pad.l + (i / (data.length - 1 || 1)) * cw;
+  const y = (v) => pad.t + ch - ((v - lo) / range) * ch;
+
+  // Grid
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const yy = pad.t + (ch / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+    const val = hi - (range / 4) * i;
+    ctx.fillStyle = '#484f58'; ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(0) + '%', pad.l - 6, yy + 3);
+  }
+
+  // Target line
+  if (target !== null && target !== undefined) {
+    const ty = y(target);
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = '#3fb95066';
+    ctx.beginPath(); ctx.moveTo(pad.l, ty); ctx.lineTo(W - pad.r, ty); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#3fb95088';
+    ctx.textAlign = 'left'; ctx.fillText(`target ${target}%`, pad.l + 5, ty - 5);
+  }
+
+  // Line
+  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  data.forEach((d, i) => { i === 0 ? ctx.moveTo(x(i), y(d[key])) : ctx.lineTo(x(i), y(d[key])); });
+  ctx.stroke();
+
+  // Dots
+  data.forEach((d, i) => {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x(i), y(d[key]), 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c9d1d9'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(d[key] + '%', x(i), y(d[key]) - 10);
+  });
+
+  // X labels
+  ctx.fillStyle = '#484f58'; ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+  data.forEach((d, i) => ctx.fillText(d.date.slice(5), x(i), H - pad.b + 15));
+}
+
+// ── DRAW CHARTS ──
+drawLine('stmtChart', rows, 'stmt', '#3fb950', 80);
+drawLine('branchChart', rows, 'branch', '#d29922', 70);
+drawLine('methChart', rows, 'meth', '#58a6ff', 75);
+drawLine('appChart', rows, 'app', '#f778ba', 70);
+
+// ── DATA TABLE ──
+const cols = [
+  { key: 'date', label: 'Date', fmt: v => v },
+  { key: 'stmt', label: 'Stmt %', fmt: v => v + '%', better: 'up' },
+  { key: 'branch', label: 'Branch %', fmt: v => v + '%', better: 'up' },
+  { key: 'meth', label: 'Meth %', fmt: v => v + '%', better: 'up' },
+  { key: 'app', label: 'app.ts %', fmt: v => v + '%', better: 'up' },
+  { key: 'note', label: 'Notes', fmt: v => v },
+];
+
+function cellClass(current, previous) {
+  if (current === previous) return '';
+  return current > previous ? 'up' : 'down';
+}
+
+const tbl = document.getElementById('dataTable');
+const thead = document.createElement('thead');
+thead.innerHTML = '<tr>' + cols.map(c => `<th>${c.label}</th>`).join('') + '</tr>';
+tbl.appendChild(thead);
+const tbody = document.createElement('tbody');
+rows.forEach((r, i) => {
+  const prev = i > 0 ? rows[i - 1] : null;
+  const cells = cols.map(c => {
+    const cls = prev && c.key !== 'date' && c.key !== 'note' ? cellClass(r[c.key], prev[c.key]) : '';
+    return `<td class="${cls}">${c.fmt(r[c.key])}</td>`;
+  }).join('');
+  tbody.innerHTML += '<tr>' + cells + '</tr>';
+});
+tbl.appendChild(tbody);
+</script>
+</body>
+</html>

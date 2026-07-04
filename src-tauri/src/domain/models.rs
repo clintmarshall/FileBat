@@ -106,7 +106,6 @@ pub struct ScanProgress {
 #[serde(rename_all = "camelCase")]
 pub struct ScanChunk {
     pub scan_id: String,
-    #[serde(rename = "all")]
     pub data: ScanChunkData,
 }
 

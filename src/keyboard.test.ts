@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { resetTauriMocks, bootApp, flushPromises } from './test/helpers';
+import { resetTauriMocks, flushPromises } from './test/helpers';
+import { bootApp } from './test/boot';
 
 async function bootWithEntries(entries: Array<{
   name: string; path: string; size: number; modified: string;
-  entry_type: 'File' | 'Folder' | 'Symlink' | 'Drive'; extension: string | null;
+  entryType: 'File' | 'Folder' | 'Symlink' | 'Drive'; extension: string | null;
 }>) {
   await bootApp((cmd) => {
     if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
@@ -30,9 +31,9 @@ describe('Keyboard Navigation', () => {
 
   it('Ctrl+A selects all entries', async () => {
     await bootWithEntries([
-      { name: 'alpha', path: 'C:\\alpha', size: 0, modified: '', entry_type: 'Folder', extension: null },
-      { name: 'beta.txt', path: 'C:\\beta.txt', size: 100, modified: '', entry_type: 'File', extension: '.txt' },
-      { name: 'gamma.txt', path: 'C:\\gamma.txt', size: 200, modified: '', entry_type: 'File', extension: '.txt' },
+      { name: 'alpha', path: 'C:\\alpha', size: 0, modified: '', entryType: 'Folder', extension: null },
+      { name: 'beta.txt', path: 'C:\\beta.txt', size: 100, modified: '', entryType: 'File', extension: '.txt' },
+      { name: 'gamma.txt', path: 'C:\\gamma.txt', size: 200, modified: '', entryType: 'File', extension: '.txt' },
     ]);
 
     await dispatchKey('a', { ctrl: true });
@@ -42,9 +43,9 @@ describe('Keyboard Navigation', () => {
 
   it('ArrowDown moves selection down', async () => {
     await bootWithEntries([
-      { name: 'alpha', path: 'C:\\alpha', size: 0, modified: '', entry_type: 'Folder', extension: null },
-      { name: 'beta.txt', path: 'C:\\beta.txt', size: 100, modified: '', entry_type: 'File', extension: '.txt' },
-      { name: 'gamma.txt', path: 'C:\\gamma.txt', size: 200, modified: '', entry_type: 'File', extension: '.txt' },
+      { name: 'alpha', path: 'C:\\alpha', size: 0, modified: '', entryType: 'Folder', extension: null },
+      { name: 'beta.txt', path: 'C:\\beta.txt', size: 100, modified: '', entryType: 'File', extension: '.txt' },
+      { name: 'gamma.txt', path: 'C:\\gamma.txt', size: 200, modified: '', entryType: 'File', extension: '.txt' },
     ]);
 
     // First ArrowDown — select index 0
@@ -61,8 +62,8 @@ describe('Keyboard Navigation', () => {
 
   it('ArrowUp moves selection up', async () => {
     await bootWithEntries([
-      { name: 'alpha', path: 'C:\\alpha', size: 0, modified: '', entry_type: 'Folder', extension: null },
-      { name: 'beta.txt', path: 'C:\\beta.txt', size: 100, modified: '', entry_type: 'File', extension: '.txt' },
+      { name: 'alpha', path: 'C:\\alpha', size: 0, modified: '', entryType: 'Folder', extension: null },
+      { name: 'beta.txt', path: 'C:\\beta.txt', size: 100, modified: '', entryType: 'File', extension: '.txt' },
     ]);
 
     // Select index 0
@@ -76,7 +77,7 @@ describe('Keyboard Navigation', () => {
 
   it('Ctrl+C triggers copy', async () => {
     await bootWithEntries([
-      { name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '', entry_type: 'File', extension: '.txt' },
+      { name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '', entryType: 'File', extension: '.txt' },
     ]);
 
     await dispatchKey('ArrowDown');
@@ -87,7 +88,7 @@ describe('Keyboard Navigation', () => {
 
   it('Ctrl+X triggers cut', async () => {
     await bootWithEntries([
-      { name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '', entry_type: 'File', extension: '.txt' },
+      { name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '', entryType: 'File', extension: '.txt' },
     ]);
 
     await dispatchKey('ArrowDown');
@@ -98,7 +99,7 @@ describe('Keyboard Navigation', () => {
 
   it('Delete key triggers delete when items selected', async () => {
     await bootWithEntries([
-      { name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '', entry_type: 'File', extension: '.txt' },
+      { name: 'file.txt', path: 'C:\\file.txt', size: 100, modified: '', entryType: 'File', extension: '.txt' },
     ]);
 
     await dispatchKey('ArrowDown');
