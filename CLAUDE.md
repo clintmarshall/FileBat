@@ -75,16 +75,13 @@ To find the PID on CDP port 9222: `netstat -ano | findstr "9222"`
 
 **E2E teardown:** The E2E script uses `taskkill /F /IM filebitch.exe` (image name, not PID) for cleanup. Never track dynamic PIDs — kill by image name.
 
-### No Exceptions
+### No Exceptions - Definition of Done
 
 A change is not "done" until:
 - Tests pass (all three layers)
 - The E2E test passes
 - The behavior matches the requirement
-
-## Fallow
-
-After running `fallow`, update the progression table and chart in [`fallow-progress.md`](fallow-progress.md). Read that file for the full workflow — this file just points here.
+- fallow details captured - see fallow-progress.md for instructions when required
 
 ## Layer Rules
 
@@ -93,3 +90,10 @@ After running `fallow`, update the progression table and chart in [`fallow-progr
 - **UseCases** orchestrate repos + apply business rules (sorting, filtering)
 - **Commands** are thin IPC bridges — no business logic
 - New code follows this pattern; do not bypass layers
+
+### Development workflow
+
+- Assess required change based on task or prompt
+- If trivial move to next step, if more complex create plan with tracked tasks
+- make change
+- see No Exceptions - Definition of Done

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { resetTauriMocks, bootApp, flushPromises } from './test/helpers';
+import { resetTauriMocks, flushPromises } from './test/helpers';
+import { bootApp } from './test/boot';
 
 async function bootWithEntries(entries: Array<{
   name: string; path: string; size: number; modified: string;
