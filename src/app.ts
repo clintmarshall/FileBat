@@ -936,10 +936,16 @@ setupScanListeners();
 // ─── Usage Tree ───
 
 /// Render the tree skeleton from Rust's structure data.
-/// Each row shows the folder name with "—" for stats.
+/// Called multiple times as BFS discovery streams batches.
+/// Preserves expansion state across re-renders.
 function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; children: string[] }>, totalFolders: number) {
     const container = document.getElementById('usage-results')!;
-    expandedPaths.clear();
+
+    // Auto-expand new folders. On first render, all are new.
+    // On subsequent renders, only newly discovered folders are added.
+    for (const folder of folders) {
+        expandedPaths.add(folder.path);
+    }
 
     // Normalize all paths to forward slashes for consistent matching
     const pathSet = new Set(folders.map(f => f.path.replace(/\\/g, '/')));

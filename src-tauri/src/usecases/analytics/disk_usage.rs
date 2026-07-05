@@ -3,6 +3,7 @@ use crate::domain::{
     ScanError as DomainScanError, ScanProgress, ScanStructure,
 };
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,33 +13,38 @@ use tokio::sync::{mpsc, oneshot};
 
 /// Orchestrates disk usage scans.
 ///
-/// Three-phase approach:
-/// - Phase 1: Recursive readdir to discover full folder tree → emit scan:structure
-/// - Phase 2: Parallel sizing of leaf folders only (10 threads) → emit scan:chunk per leaf
-/// - Phase 3: Rollup — propagate leaf stats to parents → emit scan:chunk per parent
+/// BFS streaming approach:
+/// - Discover folders in batches (readdir only, no file stats)
+/// - After each batch, emit accumulated structure → frontend renders growing tree
+/// - Size leaf folders in parallel (10 threads) as they're discovered
+/// - Stream chunk events as sizing completes
+/// - After all discovery, roll up parent totals from children
 pub struct DiskUsageUseCase;
 
 /// Inter-thread orchestration enum.
 enum ScanStep {
+    /// Structure data — may be emitted multiple times with growing data.
     Structure(ScanStructure),
+    /// One folder sized (leaf or rolled-up parent).
     Folder(FolderUsage),
-    Complete {
-        folder_count: usize,
-    },
+    /// Scan finished.
+    Complete,
+    /// Scan was cancelled.
     Cancelled,
 }
 
+/// Folders discovered in a single BFS batch.
+struct DiscoveredFolder {
+    path: String,
+    name: String,
+}
+
 impl DiskUsageUseCase {
-    /// Scan a directory tree for disk usage.
+    /// BFS streaming scan.
     ///
-    /// Phase 1: Recursive readdir to discover the full folder tree.
-    /// No file stats — just directory names. Emit scan:structure.
-    ///
-    /// Phase 2: Parallel sizing of leaf folders only (10 threads).
-    /// Every file is visited exactly once. Emit scan:chunk per leaf.
-    ///
-    /// Phase 3: Rollup — propagate leaf stats to parents.
-    /// Emit scan:chunk per parent so the frontend can patch all rows.
+    /// Discovers folders breadth-first in batches, emitting structure to the
+    /// frontend after each batch so the tree renders immediately and grows.
+    /// Leaf folders are sized in parallel (10 threads) as they're discovered.
     pub fn run(
         window: tauri::WebviewWindow,
         path: String,
@@ -54,64 +60,58 @@ impl DiskUsageUseCase {
         let scan_id_blocking = scan_id.clone();
         let cancel_blocking = cancel.clone();
 
-        // Offload everything to the blocking pool
         tokio::task::spawn_blocking(move || {
             let base = Path::new(&path_walk);
 
-            // ─── Phase 1: Full Structure Discovery ───
-            let raw_structure = discover_structure(base);
-            let total_folders = raw_structure.len();
+            // ─── Shared state ───
 
-            // Convert to FolderStructure for emission
-            let folders: Vec<FolderStructure> = raw_structure
-                .iter()
-                .map(|(p, name, children)| FolderStructure {
-                    path: p.clone(),
-                    name: name.clone(),
-                    children: children.clone(),
-                })
-                .collect();
+            // Accumulated structure — grows with each BFS batch
+            let all_folders: Arc<Mutex<Vec<FolderStructure>>> =
+                Arc::new(Mutex::new(Vec::new()));
 
-            let structure = ScanStructure {
-                scan_id: scan_id_blocking.clone(),
-                root_path: path_walk.clone(),
-                folders,
-                total_folders,
-            };
+            // Track children per parent for rollup later
+            let parent_children: Arc<Mutex<HashMap<String, Vec<String>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
 
-            if tx.send(ScanStep::Structure(structure)).is_err() {
-                return;
-            }
-
-            if cancel_blocking.load(Ordering::Relaxed) {
-                let _ = tx.send(ScanStep::Cancelled);
-                return;
-            }
-
-            // ─── Phase 2: Parallel Leaf Sizing ───
-            let leaves = find_leaves(&raw_structure);
-
-            // Shared map to collect leaf results for rollup
+            // Leaf sizing results for rollup
             let leaf_results: Arc<Mutex<HashMap<String, FolderUsage>>> =
                 Arc::new(Mutex::new(HashMap::new()));
 
-            // Work queue: send leaf folder paths, worker threads pick them up
+            // ─── Seed the root ───
+
+            let root_name = base
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path_walk.clone());
+            let root_path = normalize_path(base);
+
+            let root_structure = FolderStructure {
+                path: root_path.clone(),
+                name: root_name,
+                children: Vec::new(),
+            };
+
+            all_folders.lock().unwrap().push(root_structure);
+
+            // BFS queue
+            let mut queue: VecDeque<String> = VecDeque::new();
+            queue.push_back(root_path.clone());
+
+            // ─── Sizing work queue (10 threads) ───
+
             let (work_tx, work_rx) = std::sync::mpsc::channel::<String>();
             let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
 
-            let completed = Arc::new(AtomicUsize::new(0));
-            let cancel_size = cancel_blocking.clone();
             let tx_clone = tx.clone();
             let leaf_results_clone = leaf_results.clone();
+            let cancel_size = cancel_blocking.clone();
 
-            // Spawn 10 worker threads
-            let mut handles = Vec::new();
+            let mut sizing_handles = Vec::new();
             for _ in 0..10 {
                 let rx = work_rx.clone();
-                let comp = completed.clone();
-                let cancel_t = cancel_size.clone();
                 let tx_t = tx_clone.clone();
                 let results = leaf_results_clone.clone();
+                let cancel_t = cancel_size.clone();
 
                 let handle = std::thread::spawn(move || {
                     loop {
@@ -122,40 +122,125 @@ impl DiskUsageUseCase {
                         let folder_path = {
                             let lock = rx.lock().unwrap();
                             match lock.recv() {
-                                Ok(path) => path,
+                                Ok(p) => p,
                                 Err(_) => break,
                             }
                         };
-
-                        let result = size_folder(Path::new(&folder_path));
 
                         if cancel_t.load(Ordering::Relaxed) {
                             break;
                         }
 
-                        // Store in shared map for rollup
+                        let result = size_folder(Path::new(&folder_path));
+
+                        // Store for rollup
                         results.lock().unwrap().insert(result.path.clone(), result.clone());
 
                         // Emit to frontend
                         let _ = tx_t.send(ScanStep::Folder(result));
-                        let _ = comp.fetch_add(1, Ordering::Relaxed);
                     }
                 });
 
-                handles.push(handle);
+                sizing_handles.push(handle);
             }
 
-            // Send all leaves to the work queue
-            for leaf_path in leaves {
+            // ─── BFS Discovery Loop ───
+
+            const BATCH_SIZE: usize = 200;
+
+            // Emit initial structure (root only) so UI appears instantly
+            let initial = ScanStructure {
+                scan_id: scan_id_blocking.clone(),
+                root_path: root_path.clone(),
+                folders: all_folders.lock().unwrap().clone(),
+                total_folders: 1,
+            };
+            let _ = tx.send(ScanStep::Structure(initial));
+
+            loop {
                 if cancel_blocking.load(Ordering::Relaxed) {
                     break;
                 }
-                let _ = work_tx.send(leaf_path);
+
+                let mut batch_new: Vec<DiscoveredFolder> = Vec::with_capacity(BATCH_SIZE);
+                let mut batch_leaves: Vec<String> = Vec::new();
+
+                // Process a batch from the BFS queue
+                for _ in 0..BATCH_SIZE {
+                    let current_path = match queue.pop_front() {
+                        Some(p) => p,
+                        None => break,
+                    };
+
+                    let children =
+                        readdir_children(Path::new(&current_path), &cancel_blocking);
+
+                    if children.is_empty() {
+                        // Leaf — queue for sizing
+                        batch_leaves.push(current_path);
+                    } else {
+                        // Record parent→children relationship for rollup
+                        {
+                            let mut pc = parent_children.lock().unwrap();
+                            pc.entry(current_path.clone())
+                                .or_default()
+                                .extend(children.iter().map(|c| c.path.clone()));
+                        }
+
+                        // Add children to queue and batch
+                        for mut child in children {
+                            let child_path = child.path.clone();
+                            queue.push_back(child_path);
+                            batch_new.push(child);
+                        }
+                    }
+                }
+
+                // If nothing new and queue is empty, we're done discovering
+                if batch_new.is_empty() && queue.is_empty() {
+                    // Size any remaining leaves from this final iteration
+                    for leaf in batch_leaves {
+                        let _ = work_tx.send(leaf);
+                    }
+                    break;
+                }
+
+                // Add new folders to accumulated structure
+                {
+                    let mut folders = all_folders.lock().unwrap();
+                    for f in &batch_new {
+                        folders.push(FolderStructure {
+                            path: f.path.clone(),
+                            name: f.name.clone(),
+                            children: Vec::new(),
+                        });
+                    }
+                }
+
+                // Emit accumulated structure — frontend re-renders growing tree
+                let total_estimated = all_folders.lock().unwrap().len() + queue.len();
+                let structure = ScanStructure {
+                    scan_id: scan_id_blocking.clone(),
+                    root_path: root_path.clone(),
+                    folders: all_folders.lock().unwrap().clone(),
+                    total_folders: total_estimated,
+                };
+                let _ = tx.send(ScanStep::Structure(structure));
+
+                // Queue leaves for sizing
+                for leaf in batch_leaves {
+                    if cancel_blocking.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = work_tx.send(leaf);
+                }
             }
+
+            // Close sizing work queue — threads will drain and exit
             drop(work_tx);
 
-            // Wait for all threads
-            for handle in handles {
+            // Wait for all sizing threads
+            for handle in sizing_handles {
                 let _ = handle.join();
             }
 
@@ -164,28 +249,69 @@ impl DiskUsageUseCase {
                 return;
             }
 
-            // ─── Phase 3: Rollup ───
-            let stats = rollup(&raw_structure, leaf_results.lock().unwrap().clone());
+            // ─── Rollup ───
 
-            // Emit rolled-up stats for non-leaf folders (bottom-up so parents come after children)
-            for (parent_path, _, children) in raw_structure.iter().rev() {
+            // Build complete parent→children map from all_folders
+            let all_folders_snapshot = all_folders.lock().unwrap().clone();
+
+            // We need the full tree structure for rollup.
+            // parent_children was populated during BFS, but children Vec in
+            // FolderStructure is empty. Rebuild from parent_children.
+            let pc = parent_children.lock().unwrap().clone();
+
+            // Roll up: process folders bottom-up (deepest first).
+            // Since BFS discovered top-down, reverse the all_folders list
+            // as an approximation of bottom-up order.
+            let mut stats = leaf_results.lock().unwrap().clone();
+
+            for folder in all_folders_snapshot.iter().rev() {
+                let children: Vec<String> = pc.get(&folder.path).cloned().unwrap_or_default();
+                if children.is_empty() {
+                    continue; // Leaf — already sized
+                }
+
+                let mut total_size: u64 = 0;
+                let mut total_files: u64 = 0;
+                let mut total_folders: u64 = 0;
+
+                for child_path in &children {
+                    if let Some(child_stats) = stats.get(child_path) {
+                        total_size += child_stats.size;
+                        total_files += child_stats.file_count;
+                        total_folders += 1 + child_stats.folder_count;
+                    }
+                }
+
+                stats.insert(
+                    folder.path.clone(),
+                    FolderUsage {
+                        path: folder.path.clone(),
+                        size: total_size,
+                        file_count: total_files,
+                        folder_count: total_folders,
+                    },
+                );
+            }
+
+            // Emit rolled-up stats for non-leaf folders
+            for folder in all_folders_snapshot.iter() {
+                let children: Vec<String> = pc.get(&folder.path).cloned().unwrap_or_default();
                 if children.is_empty() {
                     continue; // Already emitted as leaf
                 }
-                if let Some(usage) = stats.get(parent_path) {
+                if let Some(usage) = stats.get(&folder.path) {
                     let _ = tx.send(ScanStep::Folder(usage.clone()));
                 }
             }
 
-            let _ = tx.send(ScanStep::Complete {
-                folder_count: total_folders,
-            });
+            let _ = tx.send(ScanStep::Complete);
         });
 
         let start_clone = start.clone();
         let scan_id_clone = scan_id.clone();
         let cancel_clone = cancel.clone();
 
+        // Async emitter — drains the channel and emits Tauri events
         tokio::spawn(async move {
             let mut total_files: u64 = 0;
             let mut total_size: u64 = 0;
@@ -214,7 +340,7 @@ impl DiskUsageUseCase {
                             },
                         );
                     }
-                    ScanStep::Complete { folder_count: _ } => {
+                    ScanStep::Complete => {
                         let _ = window.emit(
                             "scan:progress",
                             ScanProgress {
@@ -253,7 +379,6 @@ impl DiskUsageUseCase {
 }
 
 /// Size a single folder by walking all its descendants.
-/// Returns a FolderUsage with accumulated stats.
 fn size_folder(path: &Path) -> FolderUsage {
     let mut size: u64 = 0;
     let mut file_count: u64 = 0;
@@ -287,6 +412,42 @@ fn size_folder(path: &Path) -> FolderUsage {
     }
 }
 
+/// Read immediate subdirectories of a path.
+/// Returns list of discovered child folders.
+fn readdir_children(
+    dir: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Vec<DiscoveredFolder> {
+    let mut children = Vec::new();
+
+    match dir.read_dir() {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let path = entry.path();
+                if path.is_dir() {
+                    let child_path = normalize_path(&path);
+                    let child_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+
+                    children.push(DiscoveredFolder {
+                        path: child_path,
+                        name: child_name,
+                    });
+                }
+            }
+        }
+        Err(_) => {} // Skip inaccessible directories
+    }
+
+    children
+}
+
 /// Normalize a path to forward slashes for consistent keys.
 fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().to_string().replace('\\', "/")
@@ -302,139 +463,19 @@ fn emit_cancelled(window: &tauri::WebviewWindow, scan_id: &str) {
     );
 }
 
-/// Discover all directories under a root path.
-/// Returns a list of (path, name, children_paths) — no file stats, just directory names.
-/// This is a cheap readdir-only walk — every file is touched exactly zero times.
-///
-/// Uses a HashMap for O(1) parent lookup instead of linear scan.
-pub fn discover_structure(root: &Path) -> Vec<(String, String, Vec<String>)> {
-    // HashMap: path -> (name, children_paths) for O(1) parent lookup
-    let mut map: HashMap<String, (String, Vec<String>)> = HashMap::new();
-
-    let root_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| root.to_string_lossy().to_string());
-    let root_path = normalize_path(root);
-
-    map.insert(root_path.clone(), (root_name, Vec::new()));
-
-    // BFS — discover subdirectories recursively
-    let mut queue: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
-
-    while let Some(current) = queue.pop() {
-        let current_path = normalize_path(&current);
-
-        match current.read_dir() {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let child_path = normalize_path(&path);
-                        let child_name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-
-                        // O(1) parent lookup — add child to parent's children list
-                        if let Some(parent) = map.get_mut(&current_path) {
-                            parent.1.push(child_path.clone());
-                        }
-
-                        map.insert(child_path.clone(), (child_name, Vec::new()));
-                        queue.push(path);
-                    }
-                }
-            }
-            Err(_) => continue, // Skip inaccessible directories
-        }
-    }
-
-    // Convert HashMap to ordered Vec (BFS order from insertion)
-    // We need to preserve BFS order for the frontend, so rebuild from the queue order.
-    // Actually, HashMap doesn't preserve insertion order. Use a Vec to track order separately.
-    // Simpler: just collect from the map — order doesn't matter for correctness,
-    // the frontend builds the tree from parent→children relationships.
-    map.into_iter()
-        .map(|(path, (name, children))| (path, name, children))
-        .collect()
-}
-
-/// Identify leaf folders — folders that have no subdirectories.
-/// These are the only folders that need a full WalkDir for sizing.
-pub fn find_leaves(structure: &[(String, String, Vec<String>)]) -> Vec<String> {
-    structure
-        .iter()
-        .filter(|(_, _, children)| children.is_empty())
-        .map(|(path, _, _)| path.clone())
-        .collect()
-}
-
-/// Roll up stats from children to parents.
-/// Given a structure list and a map of folder stats (from leaf sizing),
-/// propagate totals bottom-up so every parent has correct aggregates.
-pub fn rollup(
-    structure: &[(String, String, Vec<String>)],
-    mut stats: HashMap<String, FolderUsage>,
-) -> HashMap<String, FolderUsage> {
-    // Process in reverse BFS order (deepest first) = bottom-up rollup.
-    for (parent_path, _, children) in structure.iter().rev() {
-        if children.is_empty() {
-            continue; // Leaf — already sized
-        }
-
-        let mut total_size: u64 = 0;
-        let mut total_files: u64 = 0;
-        let mut total_folders: u64 = 0;
-
-        for child_path in children {
-            if let Some(child_stats) = stats.get(child_path) {
-                total_size += child_stats.size;
-                total_files += child_stats.file_count;
-                total_folders += 1 + child_stats.folder_count; // +1 for the child folder itself
-            }
-        }
-
-        stats.insert(
-            parent_path.clone(),
-            FolderUsage {
-                path: parent_path.clone(),
-                size: total_size,
-                file_count: total_files,
-                folder_count: total_folders,
-            },
-        );
-    }
-
-    stats
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
 
-    /// Helper: create a directory tree and return the temp dir.
-    /// Structure:
-    /// tmp/
-    ///   a/
-    ///     file1.txt (100 bytes)
-    ///     b/
-    ///       file2.txt (200 bytes)
-    ///       c/
-    ///         (empty — c is a leaf with 0 files)
-    ///   d/
-    ///     file3.txt (50 bytes)
     fn create_test_tree() -> TempDir {
         let temp = TempDir::new().unwrap();
         let base = temp.path();
 
-        // Create directories
         fs::create_dir_all(base.join("a/b/c")).unwrap();
         fs::create_dir_all(base.join("d")).unwrap();
 
-        // Create files
         fs::write(base.join("a/file1.txt"), &[0u8; 100]).unwrap();
         fs::write(base.join("a/b/file2.txt"), &[0u8; 200]).unwrap();
         fs::write(base.join("d/file3.txt"), &[0u8; 50]).unwrap();
@@ -442,158 +483,88 @@ mod tests {
         temp
     }
 
-    // ─── discover_structure ───
+    // ─── readdir_children ───
 
     #[test]
-    fn discovers_root_and_all_subdirectories() {
+    fn reads_immediate_subdirectories() {
         let temp = create_test_tree();
         let base = temp.path();
 
-        let structure = discover_structure(base);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let children = readdir_children(base, &cancel);
 
-        // Should find: base, a, a/b, a/b/c, d = 5 directories
-        assert_eq!(structure.len(), 5);
-
-        let paths: Vec<&str> = structure.iter().map(|(p, _, _)| p.as_str()).collect();
-        assert!(paths.iter().any(|p| p.ends_with("/a")));
-        assert!(paths.iter().any(|p| p.ends_with("/a/b")));
-        assert!(paths.iter().any(|p| p.ends_with("/a/b/c")));
-        assert!(paths.iter().any(|p| p.ends_with("/d")));
+        assert_eq!(children.len(), 2);
+        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"d"));
     }
 
     #[test]
-    fn builds_parent_children_relationships() {
+    fn nested_directory_has_children() {
         let temp = create_test_tree();
         let base = temp.path();
 
-        let structure = discover_structure(base);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let children = readdir_children(&base.join("a"), &cancel);
 
-        // Find the root entry
-        let root = structure.iter().find(|(p, _, _)| *p == normalize_path(base));
-        assert!(root.is_some(), "Root should be in structure");
-
-        let (_, _, children) = root.unwrap();
-        assert_eq!(children.len(), 2, "Root should have 2 children (a, d)");
-
-        // Find 'a' and check its children
-        let a_path = structure
-            .iter()
-            .find(|(p, _, _)| p.ends_with("/a"))
-            .unwrap()
-            .0
-            .clone();
-        let a_entry = structure.iter().find(|(p, _, _)| p == &a_path).unwrap();
-        assert_eq!(a_entry.1, "a");
-        assert_eq!(a_entry.2.len(), 1, "a should have 1 child (b)");
-        assert!(a_entry.2[0].ends_with("/a/b"));
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "b");
     }
 
     #[test]
-    fn handles_empty_directory() {
+    fn leaf_directory_has_no_children() {
+        let temp = create_test_tree();
+        let base = temp.path();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let children = readdir_children(&base.join("a/b/c"), &cancel);
+
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn empty_directory_has_no_children() {
         let temp = TempDir::new().unwrap();
         let base = temp.path();
 
-        let structure = discover_structure(base);
-        assert_eq!(structure.len(), 1);
-        assert_eq!(structure[0].2.len(), 0, "Empty dir has no children");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let children = readdir_children(base, &cancel);
+
+        assert!(children.is_empty());
     }
 
-    // ─── find_leaves ───
+    // ─── size_folder ───
 
     #[test]
-    fn identifies_leaf_folders() {
+    fn sizes_leaf_folder() {
         let temp = create_test_tree();
         let base = temp.path();
 
-        let structure = discover_structure(base);
-        let leaves = find_leaves(&structure);
-
-        // Leaves should be folders with no subdirectories:
-        // a/b/c (empty) → leaf
-        // d (has file but no subdirs) → leaf
-        let leaf_names: Vec<&str> = leaves.iter().map(|p| p.as_str()).collect();
-        assert!(leaf_names.iter().any(|p| p.ends_with("/a/b/c")), "c should be a leaf");
-        assert!(leaf_names.iter().any(|p| p.ends_with("/d")), "d should be leaf");
-
-        // a and a/b should NOT be leaves (they have subdirs)
-        assert!(!leaf_names.iter().any(|p| p.ends_with("/a") && !p.ends_with("/a/b")), "a should not be a leaf");
-    }
-
-    // ─── rollup ───
-
-    #[test]
-    fn rollup_propagates_leaf_stats_to_parents() {
-        let structure = vec![
-            ("root".to_string(), "root".to_string(), vec!["root/a".to_string(), "root/b".to_string()]),
-            ("root/a".to_string(), "a".to_string(), vec![]),
-            ("root/b".to_string(), "b".to_string(), vec![]),
-        ];
-
-        let mut stats = HashMap::new();
-        stats.insert("root/a".to_string(), FolderUsage {
-            path: "root/a".to_string(),
-            size: 100,
-            file_count: 1,
-            folder_count: 0,
-        });
-        stats.insert("root/b".to_string(), FolderUsage {
-            path: "root/b".to_string(),
-            size: 200,
-            file_count: 2,
-            folder_count: 0,
-        });
-
-        let result = rollup(&structure, stats);
-
-        let root = result.get("root").unwrap();
-        assert_eq!(root.size, 300, "Root size = sum of children");
-        assert_eq!(root.file_count, 3, "Root file_count = sum of children");
-        assert_eq!(root.folder_count, 2, "Root folder_count = number of child folders");
+        let usage = size_folder(&base.join("d"));
+        assert_eq!(usage.size, 50);
+        assert_eq!(usage.file_count, 1);
+        assert_eq!(usage.folder_count, 0);
     }
 
     #[test]
-    fn rollup_handles_single_child() {
-        let structure = vec![
-            ("root".to_string(), "root".to_string(), vec!["root/a".to_string()]),
-            ("root/a".to_string(), "a".to_string(), vec![]),
-        ];
+    fn sizes_empty_folder() {
+        let temp = create_test_tree();
+        let base = temp.path();
 
-        let mut stats = HashMap::new();
-        stats.insert("root/a".to_string(), FolderUsage {
-            path: "root/a".to_string(),
-            size: 500,
-            file_count: 5,
-            folder_count: 0,
-        });
-
-        let result = rollup(&structure, stats);
-
-        let root = result.get("root").unwrap();
-        assert_eq!(root.size, 500);
-        assert_eq!(root.file_count, 5);
-        assert_eq!(root.folder_count, 1);
+        let usage = size_folder(&base.join("a/b/c"));
+        assert_eq!(usage.size, 0);
+        assert_eq!(usage.file_count, 0);
+        assert_eq!(usage.folder_count, 0);
     }
 
     #[test]
-    fn rollup_preserves_leaf_values() {
-        let structure = vec![
-            ("root".to_string(), "root".to_string(), vec!["root/a".to_string()]),
-            ("root/a".to_string(), "a".to_string(), vec![]),
-        ];
+    fn sizes_folder_with_subdirs() {
+        let temp = create_test_tree();
+        let base = temp.path();
 
-        let mut stats = HashMap::new();
-        stats.insert("root/a".to_string(), FolderUsage {
-            path: "root/a".to_string(),
-            size: 42,
-            file_count: 7,
-            folder_count: 0,
-        });
-
-        let result = rollup(&structure, stats);
-
-        // Leaf should be unchanged
-        let leaf = result.get("root/a").unwrap();
-        assert_eq!(leaf.size, 42);
-        assert_eq!(leaf.file_count, 7);
+        let usage = size_folder(&base.join("a"));
+        assert_eq!(usage.size, 300); // 100 + 200
+        assert_eq!(usage.file_count, 2);
+        assert_eq!(usage.folder_count, 2); // b, b/c
     }
 }
