@@ -46,6 +46,7 @@ fn main() {
             commands::fileops::move_items,
             // Analytics
             commands::scan::start_scan_usage,
+            commands::scan::get_scan_tree_children,
             commands::scan::start_find_large_files,
             commands::scan::start_find_duplicates,
             commands::scan::cancel_scan,

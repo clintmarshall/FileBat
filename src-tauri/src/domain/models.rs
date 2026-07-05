@@ -79,17 +79,32 @@ pub struct FolderStructure {
     pub children: Vec<String>,
 }
 
-/// The complete folder tree emitted during Phase 1 of a disk usage scan.
+/// A single child folder in a tree children response.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct ScanStructure {
+pub struct ScanTreeChild {
+    pub path: String,
+    pub name: String,
+}
+
+/// Emitted when a scan begins, telling the frontend the root folder.
+/// Frontend renders the root row and calls `get_scan_tree_children` on expand.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanTreeStarted {
     pub scan_id: String,
-    /// Root folder path that was scanned.
     pub root_path: String,
-    /// All folders in the tree, keyed by path.
-    pub folders: Vec<FolderStructure>,
-    /// Total number of folders to be sized (for progress tracking).
-    pub total_folders: usize,
+    pub root_name: String,
+}
+
+/// Emitted when children for a folder have been discovered.
+/// Frontend enables the expand button and stores the children count.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanTreeChildren {
+    pub scan_id: String,
+    pub parent_path: String,
+    pub children: Vec<ScanTreeChild>,
 }
 
 /// A group of files confirmed to be identical.

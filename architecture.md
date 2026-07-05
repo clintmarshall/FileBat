@@ -176,7 +176,7 @@ Native filesystem watch events update the current folder view without polling.
 `HashMap<PathBuf, IconHandle>` in the backend. Icons are base64-encoded and sent once per file type.
 
 ### 10. Three-phase disk usage scanning
-**Phase 1 — Structure (recursive readdir):** Walk the entire directory tree using `readdir` only. Zero file stats, zero `metadata()` calls. Builds the complete folder hierarchy with parent→children relationships. Emits `scan:structure` so the frontend renders the full tree instantly.
+**Phase 1 — Structure (BFS readdir, pull-based):** Breadth-first discovery using `readdir` only. Zero file stats, zero `metadata()` calls. Emits `scan:tree_started` (root info) at start, then `scan:children_ready` per folder as children are discovered. Frontend renders the root, then fetches children on expand via `get_scan_tree_children` command. Tree stored in backend memory — O(children) IPC per expand, not O(entire tree).
 
 **Phase 2 — Leaf Sizing (parallel, 10 threads):** Only folders with no subdirectories (leaves) are queued for sizing. Each thread walks one leaf folder with WalkDir, counting files, subfolders, and total size. Every file on disk is visited exactly once. Results are emitted as `scan:chunk` events and stored in a shared HashMap.
 

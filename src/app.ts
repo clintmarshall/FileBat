@@ -77,6 +77,9 @@ let scanResults: {
 // Tree expansion state — persists across incremental re-renders
 const expandedPaths = new Set<string>();
 
+// Tree state — known children per folder (populated by scan:children_ready)
+const knownChildren = new Map<string, Array<{ path: string; name: string }>>();
+
 function getSelectedPaths(): string[] {
   const paths: string[] = [];
   for (const idx of selectedIndices) {
@@ -746,6 +749,7 @@ async function startScan() {
     scanResults = { usage: [], largeFiles: [], duplicates: [] };
     activeScanId = null;
     expandedPaths.clear();
+    knownChildren.clear();
 
     // Show progress
     analyticsProgress.classList.remove('hidden');
@@ -884,11 +888,20 @@ async function loadHistory() {
 
 // Listen for scan events — silently skip if not in Tauri webview
 function setupScanListeners() {
-    // Phase 1: Structure — render tree skeleton
-    listen('scan:structure', (event) => {
-        const structure = event.payload as { folders: Array<{ path: string; name: string; children: string[] }>; totalFolders: number };
-        renderUsageTreeSkeleton(structure.folders, structure.totalFolders);
-    }).catch(err => console.error('Failed to register scan:structure listener:', err));
+    // Tree started — render root row
+    listen('scan:tree_started', (event) => {
+        const info = event.payload as { scanId: string; rootPath: string; rootName: string };
+        knownChildren.clear();
+        expandedPaths.clear();
+        renderTreeRoot(info.rootPath, info.rootName);
+    }).catch(err => console.error('Failed to register scan:tree_started listener:', err));
+
+    // Children ready — enable expand button for the folder
+    listen('scan:children_ready', (event) => {
+        const data = event.payload as { scanId: string; parentPath: string; children: Array<{ path: string; name: string }> };
+        knownChildren.set(data.parentPath, data.children);
+        enableExpandButton(data.parentPath, data.children.length);
+    }).catch(err => console.error('Failed to register scan:children_ready listener:', err));
 
     listen('scan:progress', (event) => {
         const data = event.payload as { percentage: number; message: string };
@@ -933,79 +946,46 @@ setupScanListeners();
 
 // ─── Render Functions ───
 
-// ─── Usage Tree ───
+// ─── Usage Tree (Pull-Based) ───
 
-/// Render the tree skeleton from Rust's structure data.
-/// Only renders top-level rows. Children are rendered on expand.
-function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; children: string[] }>, totalFolders: number) {
+/// Render the root folder row when scan starts.
+function renderTreeRoot(path: string, name: string) {
     const container = document.getElementById('usage-results')!;
 
-    // Normalize all paths to forward slashes for consistent matching
-    const pathSet = new Set(folders.map(f => f.path.replace(/\\/g, '/')));
+    // Remove empty-state placeholder
+    const emptyState = container.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
 
-    // Build parent map: for each folder, find its parent in the list
-    const parentMap = new Map<string, string | null>();
-
-    for (const folder of folders) {
-        const normalized = folder.path.replace(/\\/g, '/');
-        const lastSlash = normalized.lastIndexOf('/');
-        const parentPath = lastSlash > 0 ? normalized.slice(0, lastSlash) : null;
-
-        let resolvedParent: string | null = null;
-        if (parentPath) {
-            // Try exact match, then with trailing slash (drive roots: "C:" → "C:/")
-            // IMPORTANT: exclude self-matches (e.g., "C:/" shouldn't be its own parent)
-            if (parentPath !== normalized && pathSet.has(parentPath)) {
-                resolvedParent = folders.find(f => f.path.replace(/\\/g, '/') === parentPath)?.path ?? null;
-            } else if (!parentPath.endsWith('/') && parentPath + '/' !== normalized && pathSet.has(parentPath + '/')) {
-                resolvedParent = folders.find(f => f.path.replace(/\\/g, '/') === parentPath + '/')?.path ?? null;
-            }
-        }
-        parentMap.set(folder.path, resolvedParent);
+    // Ensure header exists
+    if (!container.querySelector('.usage-tree-header')) {
+        const header = document.createElement('div');
+        header.className = 'usage-tree-header';
+        header.innerHTML = `
+            <span class="tree-col-name">Name</span>
+            <span class="tree-col-size">Size</span>
+            <span class="tree-col-bar"></span>
+            <span class="tree-col-files">Files</span>
+            <span class="tree-col-folders">Folders</span>
+        `;
+        container.appendChild(header);
     }
 
-    // Find root folders (no parent in the map)
-    const roots = folders.filter(f => !parentMap.get(f.path));
-
-    // Only expand the root — children render on user expand
-    for (const root of roots) {
-        expandedPaths.add(root.path);
+    // Ensure body exists
+    let body = container.querySelector('.usage-tree-body') as HTMLElement;
+    if (!body) {
+        body = document.createElement('div');
+        body.className = 'usage-tree-body';
+        container.appendChild(body);
     }
 
-    container.innerHTML = '';
-
-    // Header row
-    const header = document.createElement('div');
-    header.className = 'usage-tree-header';
-    header.innerHTML = `
-        <span class="tree-col-name">Name</span>
-        <span class="tree-col-size">Size</span>
-        <span class="tree-col-bar"></span>
-        <span class="tree-col-files">Files</span>
-        <span class="tree-col-folders">Folders</span>
-    `;
-    container.appendChild(header);
-
-    // Tree body — only render top-level rows
-    const body = document.createElement('div');
-    body.className = 'usage-tree-body';
-
-    for (const root of roots) {
-        body.appendChild(createSkeletonRow(root, parentMap, folders));
-    }
-    container.appendChild(body);
+    // Clear body and render root
+    body.innerHTML = '';
+    body.appendChild(renderTreeRow({ path, name }, 0));
 }
 
-/// Create a skeleton row. Only renders immediate children when expanded.
-function createSkeletonRow(
-    folder: { path: string; name: string; children: string[] },
-    parentMap: Map<string, string | null>,
-    allFolders: Array<{ path: string; name: string; children: string[] }>,
-    depth: number = 0,
-): HTMLElement {
-    // Find actual children (folders whose parent is this folder)
-    const childFolders = allFolders.filter(f => parentMap.get(f.path) === folder.path);
-    const hasChildren = childFolders.length > 0;
+/// Render a single tree row. Toggle is disabled until children are discovered.
+function renderTreeRow(folder: { path: string; name: string }, depth: number): HTMLElement {
+    const hasChildren = knownChildren.has(folder.path);
     const isExpanded = expandedPaths.has(folder.path);
 
     // Row
@@ -1020,7 +1000,7 @@ function createSkeletonRow(
 
     // Toggle
     const toggle = document.createElement('span');
-    toggle.className = 'tree-toggle' + (isExpanded ? ' expanded' : '');
+    toggle.className = 'tree-toggle' + (isExpanded ? ' expanded' : '') + (!hasChildren ? ' disabled' : '');
     toggle.textContent = hasChildren ? '▶' : '';
 
     // Icon
@@ -1064,32 +1044,18 @@ function createSkeletonRow(
     row.appendChild(files);
     row.appendChild(folders);
 
-    // Click to toggle — render children on first expand
-    row.addEventListener('click', () => {
-        if (!hasChildren) return;
-        const isNowExpanded = !expandedPaths.has(folder.path);
-        if (isNowExpanded) {
-            expandedPaths.add(folder.path);
-        } else {
-            expandedPaths.delete(folder.path);
-        }
-        // Toggle children visibility
-        const childrenContainer = row.nextElementSibling as HTMLElement | null;
-        if (childrenContainer) {
-            childrenContainer.classList.toggle('expanded');
-            // Update toggle icon
-            const toggleEl = row.querySelector('.tree-toggle') as HTMLElement;
-            if (toggleEl) toggleEl.classList.toggle('expanded');
-        }
-    });
+    // Click handler — expand/collapse or fetch children
+    row.addEventListener('click', () => handleTreeExpand(folder.path, row, depth));
 
-    // Children container — render children on first expand
+    // Children container
     const childrenContainer = document.createElement('div');
     childrenContainer.className = 'usage-tree-children' + (isExpanded ? ' expanded' : '');
 
-    if (isExpanded) {
-        for (const child of childFolders) {
-            childrenContainer.appendChild(createSkeletonRow(child, parentMap, allFolders, depth + 1));
+    // If already expanded and children known, render them
+    if (isExpanded && hasChildren) {
+        const children = knownChildren.get(folder.path)!;
+        for (const child of children) {
+            childrenContainer.appendChild(renderTreeRow(child, depth + 1));
         }
     }
 
@@ -1098,6 +1064,49 @@ function createSkeletonRow(
     wrapper.appendChild(childrenContainer);
 
     return wrapper;
+}
+
+/// Handle expand/collapse click on a tree row.
+async function handleTreeExpand(path: string, row: HTMLElement, depth: number) {
+    const children = knownChildren.get(path);
+    if (!children) return; // Children not yet discovered
+
+    const isExpanded = expandedPaths.has(path);
+    const childrenContainer = row.nextElementSibling as HTMLElement | null;
+
+    if (isExpanded) {
+        // Collapse
+        expandedPaths.delete(path);
+        if (childrenContainer) childrenContainer.classList.remove('expanded');
+        const toggle = row.querySelector('.tree-toggle') as HTMLElement;
+        if (toggle) toggle.classList.remove('expanded');
+    } else {
+        // Expand
+        expandedPaths.add(path);
+        if (childrenContainer) childrenContainer.classList.add('expanded');
+        const toggle = row.querySelector('.tree-toggle') as HTMLElement;
+        if (toggle) toggle.classList.add('expanded');
+
+        // Render children if not already rendered
+        if (childrenContainer && childrenContainer.children.length === 0) {
+            for (const child of children) {
+                childrenContainer.appendChild(renderTreeRow(child, depth + 1));
+            }
+        }
+    }
+}
+
+/// Enable the expand button for a folder when children are discovered.
+function enableExpandButton(path: string, childCount: number) {
+    const escapeAttr = (s: string) => (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(s) : s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(path)}"]`) as HTMLElement;
+    if (!row) return;
+
+    const toggle = row.querySelector('.tree-toggle') as HTMLElement;
+    if (toggle) {
+        toggle.textContent = '▶';
+        toggle.classList.remove('disabled');
+    }
 }
 
 /// Patch a single row when its stats arrive.

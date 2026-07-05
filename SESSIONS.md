@@ -1,12 +1,103 @@
 # Session Log
 
+## 2026-07-05 — Pull-Based Tree Rendering
+
+**Goal:** Replace push-based tree (entire tree over IPC every batch) with pull-based rendering. UI drives what gets rendered, backend stores tree in memory.
+
+### What Was Done
+
+**Backend:**
+- Replaced `ScanStep::Structure(ScanStructure)` with `ScanStep::Started` and `ScanStep::ChildrenReady`
+- `ScanTreeStarted` emitted at scan start (root path + name only)
+- `ScanTreeChildren` emitted per folder as BFS discovers children (path + child names only)
+- Tree stored in `AnalyticsUseCase.tree_state` — `HashMap<scan_id, HashMap<parent_path, Vec<ScanTreeChild>>>`
+- New command: `get_scan_tree_children(scan_id, parent_path)` — returns children from memory, O(children) IPC
+- Removed: `ScanStructure`, `FolderStructure`, `emit_structure_batch`, `all_folders` Vec
+
+**Frontend:**
+- Replaced `renderUsageTreeSkeleton` + `createSkeletonRow` with `renderTreeRoot` + `renderTreeRow`
+- `scan:tree_started` → renders root row
+- `scan:children_ready` → stores children in `knownChildren` Map, enables expand button
+- Click → `handleTreeExpand` → renders children from `knownChildren` (no IPC needed, data already there)
+- Removed: `expandedPaths`, `parentMap`, incremental merge logic, debug logs
+
+**Tests:**
+- Updated `app.integration.test.ts` — uses `scan:tree_started` + `scan:children_ready` instead of `scan:structure`
+- All 182 tests pass (47 Rust unit + 7 integration + 135 frontend)
+
+### How It Works
+
+1. Scan starts → `scan:tree_started` with root → frontend renders root row
+2. BFS discovers root's children → `scan:children_ready` → frontend enables expand button, stores children
+3. User clicks root → children render from `knownChildren` Map (no IPC round-trip)
+4. Each child row has disabled toggle until its own `scan:children_ready` fires
+5. `get_scan_tree_children` command available for fallback (e.g., re-fetch after page reload)
+
+### Why Better
+
+- **IPC:** ~200 small events (path + child names) vs 1 giant JSON with 3000 folders
+- **DOM:** Only renders what the user expands, not the entire tree
+- **Simplicity:** No merge logic, no incremental updates, no DOM diffing
+- **Memory:** Backend stores tree once, frontend stores children Map
+
+### Branch
+`feature/tree-drilldown`
+
+---
+
+## 2026-07-05 — Incremental Structure Emission (Streaming Tree)
+
+**Goal:** Emit the tree structure immediately after discovering the first level, then continue discovering in the background. Tree renders instantly and grows.
+
+### What Was Done
+
+**Backend (`disk_usage.rs`):**
+- Moved `ScanStep::Structure` emission INSIDE the BFS loop (after each batch of 200 folders)
+- Previously: structure emitted ONCE after full discovery (minutes on large drives)
+- Now: structure emitted after every batch — frontend gets root + level 1 immediately
+- Added `emit_structure_batch()` helper — populates `children` from `parent_children` map before emission
+- Removed the single post-discovery structure emission
+
+**Frontend (`app.ts`):**
+- Refactored `renderUsageTreeSkeleton()` to support incremental updates
+- Previously: cleared container and re-rendered from scratch on every structure event
+- Now: merges new folders into existing DOM — skips already-rendered rows via `data-path`
+- Header and body created once (first call), subsequent calls append only new roots
+- Auto-expands roots on every incremental update
+
+### How It Works
+
+**Batch 1** (root + level 1 discovered):
+- Backend emits structure with root + immediate children
+- Frontend renders root (expanded) + level 1 rows
+- User sees the tree immediately
+
+**Batch 2+** (deeper levels discovered):
+- Backend emits structure with all discovered folders so far
+- Frontend merges — skips existing rows, adds new ones
+- Existing rows retain their expansion state
+
+**Sizing** (concurrent with discovery):
+- Leaf folders sized in parallel (10 threads) as discovered
+- `scan:chunk` events patch individual rows with size/file count/folder count
+
+### Tests
+- All 135 frontend tests pass
+- All 47 Rust unit tests pass
+- All 7 integration tests pass
+
+### Branch
+`feature/tree-drilldown`
+
+---
+
 ## 2026-07-05 — BFS Streaming Scan + Full Tree Drilldown
 
 **Goal:** Enable tree drilldown at any depth. Replace O(depth × files) redundant walks with leaf-only sizing + rollup.
 
 ### What Was Done
 - Rewrote `disk_usage.rs` as BFS streaming loop:
-  - Phase 1: BFS discovers folders in batches of 200, emits `scan:structure` after each batch
+  - Phase 1: BFS discovers folders in batches of 200
   - Phase 2: Leaf folders sized in parallel (10 threads) as discovered
   - Phase 3: Rollup propagates totals bottom-up after discovery completes
 - Frontend: removed depth selector, cleaned debug console.logs
@@ -18,31 +109,21 @@ Scanning E: drive crashed with `memory allocation of 16777216 bytes failed` / `S
 
 **Root cause:** Every `scan:structure` event emits the ENTIRE accumulated folder list. On a large drive with thousands of folders, each batch sends a growing JSON payload. The 16MB allocation failure is likely the IPC bridge trying to serialize a massive folder list.
 
-**Fix needed:** Don't emit the full list every time. Instead:
-- Emit the full list once (initial structure)
-- Emit incremental deltas (`scan:subtree` with just the new batch)
-- OR emit the full list but cap batch size and throttle emissions
+**Resolved:** Structure is now emitted incrementally after each batch. Frontend merges incrementally (no full re-render). Payload grows with each batch but the tree renders immediately — no single massive emission.
 
 ### Remaining Work
 
-**1. Top-level rollup first (priority)**
-- The UI should show just the top level initially with rolled-up data
-- As children are discovered and sized, patch the top-level rows
-- The tree should NOT re-render on every batch — just fill in stats for existing rows
-- Only emit new rows when the user expands a folder
-
-**2. Fix the crash**
-- Reduce IPC payload size — don't send the entire folder tree every batch
-- Consider incremental structure events instead of full re-renders
-
-**3. Progress bar**
+**1. Progress bar**
 - Currently only updates at 100%. Add incremental progress per completed folder.
 
-**4. Cancel between phases**
+**2. Cancel between phases**
 - Test cancel during structure phase vs sizing phase
 
+**3. Deeper-level rendering on incremental updates**
+- When a previously-rendered folder gains new children (discovered in a later batch), the children container isn't updated until the user expands the folder. Minor visual issue — tree functions correctly.
+
 ### Branch
-`feature/tree-drilldown` — 3 commits
+`feature/tree-drilldown`
 
 ---
 

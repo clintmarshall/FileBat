@@ -131,21 +131,34 @@ describe('Analytics — Disk Usage Scan', () => {
     document.getElementById('btn-scan')!.click();
     await flushPromises();
 
-    // Phase 1: emit structure (paths normalized to forward slashes)
-    emitEvent('scan:structure', {
+    // Tree started — renders root row
+    emitEvent('scan:tree_started', {
       scanId: 'test_scan',
       rootPath: 'C:/',
-      folders: [
-        { path: 'C:/', name: 'C:/', children: ['C:/Windows', 'C:/Users'] },
-        { path: 'C:/Windows', name: 'Windows', children: [] },
-        { path: 'C:/Users', name: 'Users', children: [] },
+      rootName: 'C:/',
+    });
+    await flushPromises();
+
+    // Children ready — enables expand and stores children
+    emitEvent('scan:children_ready', {
+      scanId: 'test_scan',
+      parentPath: 'C:/',
+      children: [
+        { path: 'C:/Windows', name: 'Windows' },
+        { path: 'C:/Users', name: 'Users' },
       ],
-      totalFolders: 3,
     });
     await flushPromises();
 
     const results = document.getElementById('usage-results')!;
     expect(results.innerHTML).toContain('usage-tree-header');
+
+    // Expand root to render children
+    const rootRow = results.querySelector('.usage-tree-row[data-path="C:/"]')!;
+    rootRow.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flushPromises();
+
+    // Children should now be rendered
     expect(results.innerHTML).toContain('Windows');
     expect(results.innerHTML).toContain('Users');
 

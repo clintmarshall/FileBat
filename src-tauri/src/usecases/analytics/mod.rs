@@ -6,7 +6,7 @@ mod snapshot;
 
 use snapshot::SnapshotUseCase;
 
-use crate::domain::{AppError, UsageSnapshot};
+use crate::domain::{AppError, ScanTreeChild, UsageSnapshot};
 use crate::infrastructure::SqliteAnalytics;
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,13 +25,25 @@ use std::time::Instant;
 pub struct AnalyticsUseCase {
     /// Shared state for tracking active scans (cancel flags).
     scans: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Tree structure per scan — parent_path → list of child paths.
+    /// Populated by disk_usage scan, queried by get_scan_tree_children.
+    tree_state: Arc<Mutex<HashMap<String, HashMap<String, Vec<ScanTreeChild>>>>>,
 }
 
 impl AnalyticsUseCase {
     pub fn new() -> Self {
         Self {
             scans: Arc::new(Mutex::new(HashMap::new())),
+            tree_state: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get children for a folder in the tree state.
+    pub fn get_children(&self, scan_id: &str, parent_path: &str) -> Option<Vec<ScanTreeChild>> {
+        let tree = self.tree_state.lock().unwrap();
+        tree.get(scan_id)?
+            .get(parent_path)
+            .cloned()
     }
 
     /// Generate a unique scan id.
@@ -86,6 +98,12 @@ impl AnalyticsUseCase {
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
 
+        // Initialize tree state for this scan
+        {
+            let mut tree = self.tree_state.lock().unwrap();
+            tree.entry(id_run.clone()).or_insert_with(HashMap::new);
+        }
+
         // run() returns a future that resolves when the scan + emission is fully done
         disk_usage::DiskUsageUseCase::run(
             window,
@@ -93,7 +111,8 @@ impl AnalyticsUseCase {
             max_depth,
             cancel_clone,
             start,
-            id_run,
+            id_run.clone(),
+            self.tree_state.clone(),
         )
         .await;
 

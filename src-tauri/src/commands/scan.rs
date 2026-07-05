@@ -31,6 +31,17 @@ pub async fn start_scan_usage(
         .map_err(|e: AppError| e.to_user_message())
 }
 
+/// Get children of a folder from the in-memory tree state.
+/// Returns children if discovered, empty array if not yet discovered.
+#[tauri::command]
+pub fn get_scan_tree_children(
+    scan_id: String,
+    parent_path: String,
+    analytics: tauri::State<'_, AnalyticsState>,
+) -> Vec<crate::domain::ScanTreeChild> {
+    analytics.get_children(&scan_id, &parent_path).unwrap_or_default()
+}
+
 // ─── Large Files ───
 
 /// Find large files in a directory tree.
