@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   resetTauriMocks,
   flushPromises,
+  flushRaf,
   emitEvent,
   selectFirstRow,
   startRename,
@@ -995,7 +996,7 @@ describe('Analytics — Save Snapshot', () => {
         usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
       },
     });
-    await flushPromises();
+    await flushRaf();
 
     emitEvent('scan:complete', { totalItems: 1000, totalSize: 5368709120, durationMs: 2000 });
     await flushPromises();
@@ -1057,7 +1058,7 @@ describe('Analytics — Load History', () => {
         usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
       },
     });
-    await flushPromises();
+    await flushRaf();
 
     emitEvent('scan:complete', { totalItems: 1000, totalSize: 5368709120, durationMs: 2000 });
     await flushPromises();
@@ -1099,7 +1100,7 @@ describe('Analytics — Load History', () => {
         usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
       },
     });
-    await flushPromises();
+    await flushRaf();
 
     emitEvent('scan:complete', { totalItems: 1000, totalSize: 5368709120, durationMs: 2000 });
     await flushPromises();

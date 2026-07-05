@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   resetTauriMocks,
   flushPromises,
+  flushRaf,
   emitEvent,
   registeredHandlers,
 } from './test/helpers';
@@ -148,7 +149,7 @@ describe('Analytics — Disk Usage Scan', () => {
         { path: 'C:/Users', name: 'Users' },
       ],
     });
-    await flushPromises();
+    await flushRaf();
 
     const results = document.getElementById('usage-results')!;
     expect(results.innerHTML).toContain('usage-tree-header');
@@ -170,7 +171,7 @@ describe('Analytics — Disk Usage Scan', () => {
         usage: { path: 'C:/Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
       },
     });
-    await flushPromises();
+    await flushRaf();
 
     expect(results.innerHTML).toContain('5.0 GB');
   });
@@ -216,7 +217,7 @@ describe('Analytics — Disk Usage Scan', () => {
     document.getElementById('btn-scan')!.click(); await flushPromises();
 
     emitEvent('scan:progress', { percentage: 42, message: 'Scanning C:\\Windows...' });
-    await flushPromises();
+    await flushRaf();
 
     expect(document.getElementById('progress-fill')!.style.width).toBe('42%');
     expect(document.getElementById('progress-text')!.textContent).toBe('Scanning C:\\Windows...');

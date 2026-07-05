@@ -87,6 +87,137 @@ const knownChildren = new Map<string, {
 let maxFolderSize = 0;
 let foldersSized = 0;
 
+// ─── Event Batching ───
+// Events arrive faster than the main thread can process them.
+// Buffer them and flush once per animation frame to keep the UI responsive.
+
+interface PendingChildren {
+    parentPath: string;
+    children: Array<{ path: string; name: string }>;
+}
+
+interface PendingStats {
+    path: string;
+    size: number;
+    fileCount: number;
+    folderCount: number;
+}
+
+let pendingChildren: PendingChildren[] = [];
+let pendingStats: PendingStats[] = [];
+let pendingProgress: { percentage: number; message: string } | null = null;
+let flushScheduled = false;
+
+/// Flush all pending events in a single batch.
+/// Called once per animation frame to minimize DOM thrashing.
+function flushPendingEvents() {
+    const start = performance.now();
+
+    // Flush children_ready events
+    const childrenToFlush = pendingChildren;
+    pendingChildren = [];
+
+    for (const item of childrenToFlush) {
+        knownChildren.set(item.parentPath, { children: item.children });
+        enableExpandButton(item.parentPath, item.children.length);
+
+        if (expandedPaths.has(item.parentPath)) {
+            renderChildrenForParent(item.parentPath);
+        }
+    }
+
+    // Flush stats events
+    const statsToFlush = pendingStats;
+    pendingStats = [];
+
+    for (const usage of statsToFlush) {
+        if (usage.size > maxFolderSize) {
+            maxFolderSize = usage.size;
+        }
+        foldersSized += 1;
+
+        const existing = knownChildren.get(usage.path);
+        knownChildren.set(usage.path, {
+            children: existing?.children ?? [],
+            stats: { size: usage.size, fileCount: usage.fileCount, folderCount: usage.folderCount },
+        });
+
+        const row = findTreeRow(usage.path) as HTMLElement;
+        if (!row) continue;
+
+        const sizeEl = row.querySelector('.tree-size') as HTMLElement;
+        const barEl = row.querySelector('.tree-size-bar') as HTMLElement;
+        const filesEl = row.querySelector('.tree-files') as HTMLElement;
+        const foldersEl = row.querySelector('.tree-folders') as HTMLElement;
+
+        if (sizeEl) sizeEl.textContent = formatSize(usage.size);
+        if (barEl) {
+            barEl.style.width = `${Math.max(0, (usage.size / (maxFolderSize || 1)) * 100)}px`;
+        }
+        if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
+        if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
+    }
+
+    // Flush progress
+    if (pendingProgress) {
+        progressFill.style.width = `${pendingProgress.percentage}%`;
+        progressText.textContent = pendingProgress.message;
+        statusInfoEl.textContent = pendingProgress.message;
+        pendingProgress = null;
+    }
+
+    const elapsed = performance.now() - start;
+    updatePerfOverlay({
+        childrenFlushed: childrenToFlush.length,
+        statsFlushed: statsToFlush.length,
+        flushMs: elapsed.toFixed(1),
+        queueDepth: pendingChildren.length + pendingStats.length,
+    });
+}
+
+/// Schedule a flush on the next animation frame.
+function scheduleFlush() {
+    if (!flushScheduled) {
+        flushScheduled = true;
+        requestAnimationFrame(() => {
+            flushScheduled = false;
+            flushPendingEvents();
+        });
+    }
+}
+
+// ─── Perf Overlay ───
+
+const perfOverlayEl = document.getElementById('perf-overlay') as HTMLElement | null;
+let perfFrameCount = 0;
+let perfLastFpsTime = performance.now();
+let perfCurrentFps = 60;
+
+/// Update the visible performance overlay.
+function updatePerfOverlay(data: {
+    childrenFlushed: number;
+    statsFlushed: number;
+    flushMs: string;
+    queueDepth: number;
+}) {
+    if (!perfOverlayEl) return;
+
+    perfFrameCount++;
+    const now = performance.now();
+    if (now - perfLastFpsTime >= 1000) {
+        perfCurrentFps = Math.round(perfFrameCount * 1000 / (now - perfLastFpsTime));
+        perfFrameCount = 0;
+        perfLastFpsTime = now;
+    }
+
+    const color = perfCurrentFps < 20 ? '#f44' : perfCurrentFps < 40 ? '#fa0' : '#888';
+    perfOverlayEl.innerHTML = `
+        <span style="color:${color};font-size:11px;font-family:monospace">
+        FPS:${perfCurrentFps} | Q:${data.queueDepth} | C:${data.childrenFlushed} | S:${data.statsFlushed} | ${data.flushMs}ms
+        </span>
+    `;
+}
+
 function getSelectedPaths(): string[] {
   const paths: string[] = [];
   for (const idx of selectedIndices) {
@@ -752,13 +883,17 @@ async function startScan() {
         return;
     }
 
-    // Reset results + observability
+    // Reset results + observability + batching
     scanResults = { largeFiles: [], duplicates: [] };
     activeScanId = null;
     expandedPaths.clear();
     knownChildren.clear();
     maxFolderSize = 0;
     foldersSized = 0;
+    pendingChildren = [];
+    pendingStats = [];
+    pendingProgress = null;
+    flushScheduled = false;
 
     // Show progress
     analyticsProgress.classList.remove('hidden');
@@ -907,40 +1042,40 @@ async function loadHistory() {
 
 // Listen for scan events — silently skip if not in Tauri webview
 function setupScanListeners() {
-    // Tree started — render root row
+    // Tree started — render root row (not batched, fires once)
     listen('scan:tree_started', (event) => {
         const info = event.payload as { scanId: string; rootPath: string; rootName: string };
         knownChildren.clear();
         expandedPaths.clear();
+        pendingChildren = [];
+        pendingStats = [];
+        maxFolderSize = 0;
+        foldersSized = 0;
         renderTreeRoot(info.rootPath, info.rootName);
     }).catch(err => console.error('Failed to register scan:tree_started listener:', err));
 
-    // Children ready — enable expand button + render children if parent is expanded
+    // Children ready — buffer for batched DOM update
     listen('scan:children_ready', (event) => {
         const data = event.payload as { scanId: string; parentPath: string; children: Array<{ path: string; name: string }> };
-        knownChildren.set(data.parentPath, { children: data.children });
-        enableExpandButton(data.parentPath, data.children.length);
-
-        // If the parent is already expanded, render children now
-        if (expandedPaths.has(data.parentPath)) {
-            renderChildrenForParent(data.parentPath);
-        }
+        pendingChildren.push({ parentPath: data.parentPath, children: data.children });
+        scheduleFlush();
     }).catch(err => console.error('Failed to register scan:children_ready listener:', err));
 
+    // Progress — buffer for batched DOM update
     listen('scan:progress', (event) => {
         const data = event.payload as { percentage: number; message: string };
-        progressFill.style.width = `${data.percentage}%`;
-        progressText.textContent = data.message;
-        statusInfoEl.textContent = data.message;
+        pendingProgress = data;
+        scheduleFlush();
     }).catch(err => console.error('Failed to register scan:progress listener:', err));
 
-    // Phase 2: Chunk — patch individual rows
+    // Phase 2: Chunk — buffer stats for batched DOM update
     listen('scan:chunk', (event) => {
         const chunk = event.payload as any;
         const data = chunk.data;
 
         if (data.type === 'folder_usage') {
-            patchUsageRow(data.usage);
+            pendingStats.push(data.usage);
+            scheduleFlush();
         } else if (data.type === 'large_file') {
             scanResults.largeFiles.push(data.entry);
             renderLargeFilesResults();
@@ -1237,42 +1372,7 @@ function getMaxFolderSize(): number {
     return maxFolderSize || 1;
 }
 
-/// Patch a single row when its stats arrive.
-/// Stores stats in knownChildren so they persist for future expands.
-function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
-    // Update running max (O(1) instead of scanning all known children)
-    if (usage.size > maxFolderSize) {
-        maxFolderSize = usage.size;
-    }
-    foldersSized += 1;
-
-    // Store stats in the tree node (creates entry if children not yet discovered)
-    const existing = knownChildren.get(usage.path);
-    knownChildren.set(usage.path, {
-        children: existing?.children ?? [],
-        stats: {
-            size: usage.size,
-            fileCount: usage.fileCount,
-            folderCount: usage.folderCount,
-        },
-    });
-
-    // Also try to patch the row if it exists
-    const row = findTreeRow(usage.path) as HTMLElement;
-    if (!row) return;
-
-    const sizeEl = row.querySelector('.tree-size') as HTMLElement;
-    const barEl = row.querySelector('.tree-size-bar') as HTMLElement;
-    const filesEl = row.querySelector('.tree-files') as HTMLElement;
-    const foldersEl = row.querySelector('.tree-folders') as HTMLElement;
-
-    if (sizeEl) sizeEl.textContent = formatSize(usage.size);
-    if (barEl) {
-        barEl.style.width = `${Math.max(0, (usage.size / getMaxFolderSize()) * 100)}px`;
-    }
-    if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
-    if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
-}
+// patchUsageRow logic is now in flushPendingEvents (batched)
 
 
 function renderLargeFilesResults() {

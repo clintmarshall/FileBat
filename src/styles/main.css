@@ -641,3 +641,12 @@ html, body {
 .usage-tree-children.expanded {
     display: block;
 }
+
+/* === Performance Overlay === */
+#perf-overlay {
+    float: right;
+    margin-right: 8px;
+    color: #888;
+    font-size: 11px;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
