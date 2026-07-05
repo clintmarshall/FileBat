@@ -1,5 +1,51 @@
 # Session Log
 
+## 2026-07-05 — BFS Streaming Scan + Full Tree Drilldown
+
+**Goal:** Enable tree drilldown at any depth. Replace O(depth × files) redundant walks with leaf-only sizing + rollup.
+
+### What Was Done
+- Rewrote `disk_usage.rs` as BFS streaming loop:
+  - Phase 1: BFS discovers folders in batches of 200, emits `scan:structure` after each batch
+  - Phase 2: Leaf folders sized in parallel (10 threads) as discovered
+  - Phase 3: Rollup propagates totals bottom-up after discovery completes
+- Frontend: removed depth selector, cleaned debug console.logs
+- 7 Rust unit tests for `readdir_children`, `size_folder`
+- All 54 Rust tests pass, 135 frontend tests pass, E2E passes
+
+### Crash — Memory Allocation Failure
+Scanning E: drive crashed with `memory allocation of 16777216 bytes failed` / `STATUS_STACK_BUFFER_OVERRUN`.
+
+**Root cause:** Every `scan:structure` event emits the ENTIRE accumulated folder list. On a large drive with thousands of folders, each batch sends a growing JSON payload. The 16MB allocation failure is likely the IPC bridge trying to serialize a massive folder list.
+
+**Fix needed:** Don't emit the full list every time. Instead:
+- Emit the full list once (initial structure)
+- Emit incremental deltas (`scan:subtree` with just the new batch)
+- OR emit the full list but cap batch size and throttle emissions
+
+### Remaining Work
+
+**1. Top-level rollup first (priority)**
+- The UI should show just the top level initially with rolled-up data
+- As children are discovered and sized, patch the top-level rows
+- The tree should NOT re-render on every batch — just fill in stats for existing rows
+- Only emit new rows when the user expands a folder
+
+**2. Fix the crash**
+- Reduce IPC payload size — don't send the entire folder tree every batch
+- Consider incremental structure events instead of full re-renders
+
+**3. Progress bar**
+- Currently only updates at 100%. Add incremental progress per completed folder.
+
+**4. Cancel between phases**
+- Test cancel during structure phase vs sizing phase
+
+### Branch
+`feature/tree-drilldown` — 3 commits
+
+---
+
 ## 2026-07-04 — Disk Usage Tree + Two-Phase Parallel Scan
 
 **Goal:** Replace flat table with tree view, then overhaul the scan to be two-phase with parallel sizing.

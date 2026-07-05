@@ -936,16 +936,9 @@ setupScanListeners();
 // ─── Usage Tree ───
 
 /// Render the tree skeleton from Rust's structure data.
-/// Called multiple times as BFS discovery streams batches.
-/// Preserves expansion state across re-renders.
+/// Only renders top-level rows. Children are rendered on expand.
 function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; children: string[] }>, totalFolders: number) {
     const container = document.getElementById('usage-results')!;
-
-    // Auto-expand new folders. On first render, all are new.
-    // On subsequent renders, only newly discovered folders are added.
-    for (const folder of folders) {
-        expandedPaths.add(folder.path);
-    }
 
     // Normalize all paths to forward slashes for consistent matching
     const pathSet = new Set(folders.map(f => f.path.replace(/\\/g, '/')));
@@ -974,9 +967,7 @@ function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; ch
     // Find root folders (no parent in the map)
     const roots = folders.filter(f => !parentMap.get(f.path));
 
-    // Tree skeleton built from structure data
-
-    // Auto-expand all on first render
+    // Auto-expand root folders only
     for (const folder of folders) {
         expandedPaths.add(folder.path);
     }
@@ -995,7 +986,7 @@ function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; ch
     `;
     container.appendChild(header);
 
-    // Tree body
+    // Tree body — only render top-level rows
     const body = document.createElement('div');
     body.className = 'usage-tree-body';
 
@@ -1003,11 +994,9 @@ function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; ch
         body.appendChild(createSkeletonRow(root, parentMap, folders));
     }
     container.appendChild(body);
-
-    // Tree skeleton rendered
 }
 
-/// Create a skeleton row and its children recursively.
+/// Create a skeleton row. Only renders immediate children when expanded.
 function createSkeletonRow(
     folder: { path: string; name: string; children: string[] },
     parentMap: Map<string, string | null>,
@@ -1075,13 +1064,14 @@ function createSkeletonRow(
     row.appendChild(files);
     row.appendChild(folders);
 
-    // Click to toggle
+    // Click to toggle — render children on first expand
     row.addEventListener('click', () => {
         if (!hasChildren) return;
-        if (expandedPaths.has(folder.path)) {
-            expandedPaths.delete(folder.path);
-        } else {
+        const isNowExpanded = !expandedPaths.has(folder.path);
+        if (isNowExpanded) {
             expandedPaths.add(folder.path);
+        } else {
+            expandedPaths.delete(folder.path);
         }
         // Toggle children visibility
         const childrenContainer = row.nextElementSibling as HTMLElement | null;
@@ -1093,7 +1083,7 @@ function createSkeletonRow(
         }
     });
 
-    // Children container
+    // Children container — render children on first expand
     const childrenContainer = document.createElement('div');
     childrenContainer.className = 'usage-tree-children' + (isExpanded ? ' expanded' : '');
 

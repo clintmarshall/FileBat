@@ -13,17 +13,17 @@ use tokio::sync::{mpsc, oneshot};
 
 /// Orchestrates disk usage scans.
 ///
-/// BFS streaming approach:
-/// - Discover folders in batches (readdir only, no file stats)
-/// - After each batch, emit accumulated structure → frontend renders growing tree
-/// - Size leaf folders in parallel (10 threads) as they're discovered
-/// - Stream chunk events as sizing completes
-/// - After all discovery, roll up parent totals from children
+/// Three-phase approach:
+/// - Phase 1: BFS discovers all folders (readdir only, no file stats)
+/// - Phase 2: Leaf folders sized in parallel (10 threads)
+/// - Phase 3: Rollup propagates totals bottom-up
+///
+/// Structure emitted ONCE after discovery. Chunks streamed as sizing completes.
 pub struct DiskUsageUseCase;
 
 /// Inter-thread orchestration enum.
 enum ScanStep {
-    /// Structure data — may be emitted multiple times with growing data.
+    /// Structure data — emitted once after discovery completes.
     Structure(ScanStructure),
     /// One folder sized (leaf or rolled-up parent).
     Folder(FolderUsage),
@@ -148,15 +148,7 @@ impl DiskUsageUseCase {
 
             const BATCH_SIZE: usize = 200;
 
-            // Emit initial structure (root only) so UI appears instantly
-            let initial = ScanStructure {
-                scan_id: scan_id_blocking.clone(),
-                root_path: root_path.clone(),
-                folders: all_folders.lock().unwrap().clone(),
-                total_folders: 1,
-            };
-            let _ = tx.send(ScanStep::Structure(initial));
-
+            // BFS discovery loop — discover all folders, size leaves as we go
             loop {
                 if cancel_blocking.load(Ordering::Relaxed) {
                     break;
@@ -196,15 +188,6 @@ impl DiskUsageUseCase {
                     }
                 }
 
-                // If nothing new and queue is empty, we're done discovering
-                if batch_new.is_empty() && queue.is_empty() {
-                    // Size any remaining leaves from this final iteration
-                    for leaf in batch_leaves {
-                        let _ = work_tx.send(leaf);
-                    }
-                    break;
-                }
-
                 // Add new folders to accumulated structure
                 {
                     let mut folders = all_folders.lock().unwrap();
@@ -217,16 +200,6 @@ impl DiskUsageUseCase {
                     }
                 }
 
-                // Emit accumulated structure — frontend re-renders growing tree
-                let total_estimated = all_folders.lock().unwrap().len() + queue.len();
-                let structure = ScanStructure {
-                    scan_id: scan_id_blocking.clone(),
-                    root_path: root_path.clone(),
-                    folders: all_folders.lock().unwrap().clone(),
-                    total_folders: total_estimated,
-                };
-                let _ = tx.send(ScanStep::Structure(structure));
-
                 // Queue leaves for sizing
                 for leaf in batch_leaves {
                     if cancel_blocking.load(Ordering::Relaxed) {
@@ -234,7 +207,22 @@ impl DiskUsageUseCase {
                     }
                     let _ = work_tx.send(leaf);
                 }
+
+                // If nothing new and queue is empty, we're done discovering
+                if batch_new.is_empty() && queue.is_empty() {
+                    break;
+                }
             }
+
+            // Emit structure ONCE after discovery completes
+            let total_folders = all_folders.lock().unwrap().len();
+            let structure = ScanStructure {
+                scan_id: scan_id_blocking.clone(),
+                root_path: root_path.clone(),
+                folders: all_folders.lock().unwrap().clone(),
+                total_folders,
+            };
+            let _ = tx.send(ScanStep::Structure(structure));
 
             // Close sizing work queue — threads will drain and exit
             drop(work_tx);
