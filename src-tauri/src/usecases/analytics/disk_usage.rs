@@ -410,6 +410,7 @@ impl DiskUsageUseCase {
         let start_clone = start.clone();
         let scan_id_clone = scan_id.clone();
         let cancel_clone = cancel.clone();
+        let tree_for_emit = tree.clone();
 
         // Async emitter — drains the channel and emits Tauri events
         tokio::spawn(async move {
@@ -444,6 +445,17 @@ impl DiskUsageUseCase {
                         );
                     }
                     ScanStep::Complete => {
+                        // Observability — log backend memory state
+                        {
+                            let tree = tree_for_emit.lock().unwrap();
+                            let scan_tree = tree.get(&scan_id_clone);
+                            let tree_folders = scan_tree.map(|s| s.len()).unwrap_or(0);
+                            println!(
+                                "[BACKEND MEMORY] scan={} | tree_folders={} | sized_folders={} | total_files={} | total_size={}",
+                                scan_id_clone, tree_folders, folder_count, total_files, format_bytes(total_size),
+                            );
+                        }
+
                         let _ = window.emit(
                             "scan:progress",
                             ScanProgress {
@@ -549,6 +561,21 @@ fn readdir_children(
     }
 
     children
+}
+
+/// Format bytes as human-readable size (for observability logging).
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000_000 {
+        format!("{:.1} TB", bytes as f64 / 1_000_000_000_000.0)
+    } else if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1} KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 /// Normalize a path to forward slashes for consistent keys.

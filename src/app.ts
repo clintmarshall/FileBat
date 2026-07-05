@@ -83,6 +83,10 @@ const knownChildren = new Map<string, {
     stats?: { size: number; fileCount: number; folderCount: number };
 }>();
 
+// Observability — running max folder size (avoids O(n²) scan on every patch).
+let maxFolderSize = 0;
+let foldersSized = 0;
+
 function getSelectedPaths(): string[] {
   const paths: string[] = [];
   for (const idx of selectedIndices) {
@@ -748,11 +752,13 @@ async function startScan() {
         return;
     }
 
-    // Reset results
+    // Reset results + observability
     scanResults = { largeFiles: [], duplicates: [] };
     activeScanId = null;
     expandedPaths.clear();
     knownChildren.clear();
+    maxFolderSize = 0;
+    foldersSized = 0;
 
     // Show progress
     analyticsProgress.classList.remove('hidden');
@@ -950,6 +956,9 @@ function setupScanListeners() {
         analyticsSummary.classList.remove('hidden');
         summaryText.textContent = `Scan complete: ${data.totalItems.toLocaleString()} items · ${formatSize(data.totalSize)} · ${(data.durationMs / 1000).toFixed(1)}s`;
         statusInfoEl.textContent = summaryText.textContent;
+
+        // Observability — log memory state after scan
+        logMemoryState();
     }).catch(err => console.error('Failed to register scan:complete listener:', err));
 
     listen('scan:error', (event) => {
@@ -960,6 +969,43 @@ function setupScanListeners() {
 }
 
 setupScanListeners();
+
+// ─── Observability ───
+
+/// Log memory state to console for debugging.
+/// Uses performance.memory when available (Chrome/Edge), falls back to tree stats.
+function logMemoryState() {
+    const info = {
+        treeNodes: knownChildren.size,
+        foldersSized,
+        maxFolderSize: formatSize(maxFolderSize),
+        expandedPaths: expandedPaths.size,
+        largeFiles: scanResults.largeFiles.length,
+        duplicates: scanResults.duplicates.length,
+    };
+
+    // performance.memory is available in Chrome/Edge (not Firefox)
+    if ('memory' in performance) {
+        const mem = (performance as any).memory as {
+            usedJSHeapSize: number;
+            totalJSHeapSize: number;
+            jsHeapSizeLimit: number;
+        } | undefined;
+        if (mem) {
+            console.log('[MEMORY]', {
+                ...info,
+                usedHeap: formatSize(mem.usedJSHeapSize),
+                totalHeap: formatSize(mem.totalJSHeapSize),
+                heapLimit: formatSize(mem.jsHeapSizeLimit),
+                heapPct: ((mem.usedJSHeapSize / mem.jsHeapSizeLimit) * 100).toFixed(1) + '%',
+            });
+        } else {
+            console.log('[MEMORY]', info);
+        }
+    } else {
+        console.log('[MEMORY]', info);
+    }
+}
 
 // ─── Render Functions ───
 
@@ -1185,20 +1231,21 @@ function renderChildrenForParent(path: string) {
     }
 }
 
-/// Get the max folder size across all known folders (for size-bar scaling).
+/// Get the max folder size (for size-bar scaling).
+/// Uses a running max to avoid O(n²) scanning on every patch.
 function getMaxFolderSize(): number {
-    let max = 0;
-    for (const node of knownChildren.values()) {
-        if (node.stats && node.stats.size > max) {
-            max = node.stats.size;
-        }
-    }
-    return max || 1;
+    return maxFolderSize || 1;
 }
 
 /// Patch a single row when its stats arrive.
 /// Stores stats in knownChildren so they persist for future expands.
 function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
+    // Update running max (O(1) instead of scanning all known children)
+    if (usage.size > maxFolderSize) {
+        maxFolderSize = usage.size;
+    }
+    foldersSized += 1;
+
     // Store stats in the tree node (creates entry if children not yet discovered)
     const existing = knownChildren.get(usage.path);
     knownChildren.set(usage.path, {
@@ -1221,8 +1268,7 @@ function patchUsageRow(usage: { path: string; size: number; fileCount: number; f
 
     if (sizeEl) sizeEl.textContent = formatSize(usage.size);
     if (barEl) {
-        const maxSize = getMaxFolderSize();
-        barEl.style.width = `${Math.max(0, (usage.size / maxSize) * 100)}px`;
+        barEl.style.width = `${Math.max(0, (usage.size / getMaxFolderSize()) * 100)}px`;
     }
     if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
     if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
