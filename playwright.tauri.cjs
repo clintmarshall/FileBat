@@ -260,11 +260,11 @@ async function testDiskUsageScan(page, consoleMessages) {
 		await page.waitForSelector('#analytics-summary', { state: 'visible', timeout: 60000 });
 		console.log('  ✓ PASS: Scan completed');
 
-		const resultRows = await page.locator('#usage-results .analytics-table tr').count();
-		console.log(`  ✓ Usage results: ${resultRows - 1} folders scanned`);
+		const resultRows = await page.locator('#usage-results .usage-tree-row').count();
+		console.log(`  ✓ Usage results: ${resultRows} folders in tree`);
 
-		if (resultRows < 2) {
-			console.log('  ✗ FAIL: No results found in usage table');
+		if (resultRows < 1) {
+			console.log('  ✗ FAIL: No results found in usage tree');
 			process.exitCode = 1;
 		}
 

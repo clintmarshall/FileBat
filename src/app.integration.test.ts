@@ -116,7 +116,7 @@ describe('Analytics — Disk Usage Scan', () => {
     const { invoke } = await import('@tauri-apps/api/core');
     expect(invoke).toHaveBeenCalledWith(
       'start_scan_usage',
-      expect.objectContaining({ path: 'C:\\', maxDepth: 2 }),
+      expect.objectContaining({ path: 'C:\\', maxDepth: 0 }),
     );
 
     expect(document.getElementById('analytics-progress')!.classList.contains('hidden')).toBe(false);
@@ -131,17 +131,35 @@ describe('Analytics — Disk Usage Scan', () => {
     document.getElementById('btn-scan')!.click();
     await flushPromises();
 
-    emitEvent('scan:chunk', {
+    // Phase 1: emit structure (paths normalized to forward slashes)
+    emitEvent('scan:structure', {
       scanId: 'test_scan',
-      data: {
-        type: 'folder_usage',
-        usage: { path: 'C:\\Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
-      },
+      rootPath: 'C:/',
+      folders: [
+        { path: 'C:/', name: 'C:/', children: ['C:/Windows', 'C:/Users'] },
+        { path: 'C:/Windows', name: 'Windows', children: ['C:/Windows/System32'] },
+        { path: 'C:/Windows/System32', name: 'System32', children: [] },
+        { path: 'C:/Users', name: 'Users', children: [] },
+      ],
+      totalFolders: 4,
     });
     await flushPromises();
 
     const results = document.getElementById('usage-results')!;
-    expect(results.innerHTML).toContain('C:\\Windows');
+    expect(results.innerHTML).toContain('usage-tree-header');
+    expect(results.innerHTML).toContain('Windows');
+    expect(results.innerHTML).toContain('System32');
+
+    // Phase 2: emit chunk to patch the row
+    emitEvent('scan:chunk', {
+      scanId: 'test_scan',
+      data: {
+        type: 'folder_usage',
+        usage: { path: 'C:/Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
+      },
+    });
+    await flushPromises();
+
     expect(results.innerHTML).toContain('5.0 GB');
   });
 

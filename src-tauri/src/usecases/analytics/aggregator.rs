@@ -39,7 +39,6 @@ impl FolderUsageAccumulator {
             size: 0,
             file_count: 0,
             folder_count: 1,
-            depth: 0,
         });
 
         Self {
@@ -81,7 +80,6 @@ impl FolderUsageAccumulator {
                     size: 0,
                     file_count: 0,
                     folder_count: 0,
-                    depth: folder_depth,
                 });
 
             entry.size += size;
@@ -102,14 +100,11 @@ impl FolderUsageAccumulator {
             // Path is above the base (e.g., symlink target outside the tree)
             return;
         }
-        let folder_depth = path_count - self.base_depth;
-
         self.folder_map.entry(key).or_insert_with(|| FolderUsage {
             path: normalize_path(path),
             size: 0,
             file_count: 0,
             folder_count: 1,
-            depth: folder_depth,
         });
     }
 
@@ -307,7 +302,6 @@ mod tests {
                 size: 10,
                 file_count: 1,
                 folder_count: 0,
-                depth: 1,
             },
         );
         acc.folder_map.insert(
@@ -317,7 +311,6 @@ mod tests {
                 size: 1000,
                 file_count: 5,
                 folder_count: 0,
-                depth: 1,
             },
         );
 

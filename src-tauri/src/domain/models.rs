@@ -66,7 +66,30 @@ pub struct FolderUsage {
     pub size: u64,
     pub file_count: u64,
     pub folder_count: u64,
-    pub depth: u32,
+}
+
+/// A single folder in the directory structure tree.
+/// Sent during Phase 1 (structure scan) so the frontend can render the tree immediately.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderStructure {
+    pub path: String,
+    pub name: String,
+    /// Direct child folder paths (immediate children only).
+    pub children: Vec<String>,
+}
+
+/// The complete folder tree emitted during Phase 1 of a disk usage scan.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStructure {
+    pub scan_id: String,
+    /// Root folder path that was scanned.
+    pub root_path: String,
+    /// All folders in the tree, keyed by path.
+    pub folders: Vec<FolderStructure>,
+    /// Total number of folders to be sized (for progress tracking).
+    pub total_folders: usize,
 }
 
 /// A group of files confirmed to be identical.
@@ -230,7 +253,6 @@ mod tests {
             size: 1024,
             file_count: 5,
             folder_count: 2,
-            depth: 1,
         };
         let json = serde_json::to_string(&usage).unwrap();
         assert!(json.contains("\"path\":\"/test\""));
@@ -247,7 +269,6 @@ mod tests {
                 size: 100,
                 file_count: 1,
                 folder_count: 0,
-                depth: 0,
             },
         };
         let json = serde_json::to_string(&data).unwrap();

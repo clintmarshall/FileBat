@@ -34,6 +34,17 @@ interface Volume {
   path: string;
 }
 
+// ─── Usage Tree Types ───
+
+interface UsageTreeNode {
+  path: string;
+  name: string;
+  size: number;
+  fileCount: number;
+  folderCount: number;
+  children: UsageTreeNode[];
+}
+
 // ─── State ───
 
 const history: string[] = [];
@@ -62,6 +73,9 @@ let scanResults: {
     largeFiles: Entry[];
     duplicates: Array<{ hash: string; sizeEach: number; files: string[]; wastedSpace: number }>;
 } = { usage: [], largeFiles: [], duplicates: [] };
+
+// Tree expansion state — persists across incremental re-renders
+const expandedPaths = new Set<string>();
 
 function getSelectedPaths(): string[] {
   const paths: string[] = [];
@@ -731,6 +745,7 @@ async function startScan() {
     // Reset results
     scanResults = { usage: [], largeFiles: [], duplicates: [] };
     activeScanId = null;
+    expandedPaths.clear();
 
     // Show progress
     analyticsProgress.classList.remove('hidden');
@@ -757,7 +772,7 @@ async function startScan() {
 
         let scanId: string;
         if (currentTab === 'usage') {
-            scanId = await invoke('start_scan_usage', { path, maxDepth: 2 });
+            scanId = await invoke('start_scan_usage', { path, maxDepth: 0 });
         } else if (currentTab === 'large-files') {
             scanId = await invoke('start_find_large_files', {
                 path,
@@ -865,28 +880,31 @@ async function loadHistory() {
     }
 }
 
-// ─── Event Listeners ─── (refresh 2)
+// ─── Event Listeners ───
 
 // Listen for scan events — silently skip if not in Tauri webview
 function setupScanListeners() {
-    console.log('Setting up scan event listeners...');
+    // Phase 1: Structure — render tree skeleton
+    listen('scan:structure', (event) => {
+        const structure = event.payload as { folders: Array<{ path: string; name: string; children: string[] }>; totalFolders: number };
+        renderUsageTreeSkeleton(structure.folders, structure.totalFolders);
+    }).catch(err => console.error('Failed to register scan:structure listener:', err));
+
     listen('scan:progress', (event) => {
-        console.log('scan:progress received', event.payload);
         const data = event.payload as { percentage: number; message: string };
         progressFill.style.width = `${data.percentage}%`;
         progressText.textContent = data.message;
         statusInfoEl.textContent = data.message;
-    }).then(() => console.log('scan:progress listener registered'))
-      .catch(err => console.error('Failed to register scan:progress listener:', err));
+    }).catch(err => console.error('Failed to register scan:progress listener:', err));
 
+    // Phase 2: Chunk — patch individual rows
     listen('scan:chunk', (event) => {
-        console.log('scan:chunk received', event.payload);
         const chunk = event.payload as any;
         const data = chunk.data;
 
         if (data.type === 'folder_usage') {
             scanResults.usage.push(data.usage);
-            renderUsageResults();
+            patchUsageRow(data.usage);
         } else if (data.type === 'large_file') {
             scanResults.largeFiles.push(data.entry);
             renderLargeFilesResults();
@@ -894,57 +912,236 @@ function setupScanListeners() {
             scanResults.duplicates.push(data.group);
             renderDuplicatesResults();
         }
-    }).then(() => console.log('scan:chunk listener registered'))
-      .catch(err => console.error('Failed to register scan:chunk listener:', err));
+    }).catch(err => console.error('Failed to register scan:chunk listener:', err));
 
     listen('scan:complete', (event) => {
-        console.log('scan:complete received', event.payload);
         const data = event.payload as { totalItems: number; totalSize: number; durationMs: number };
         resetScanUI();
         analyticsSummary.classList.remove('hidden');
         summaryText.textContent = `Scan complete: ${data.totalItems.toLocaleString()} items · ${formatSize(data.totalSize)} · ${(data.durationMs / 1000).toFixed(1)}s`;
         statusInfoEl.textContent = summaryText.textContent;
-    }).then(() => console.log('scan:complete listener registered'))
-      .catch(err => console.error('Failed to register scan:complete listener:', err));
+    }).catch(err => console.error('Failed to register scan:complete listener:', err));
 
     listen('scan:error', (event) => {
-        console.log('scan:error received', event.payload);
         const data = event.payload as { message: string };
         resetScanUI();
         statusInfoEl.textContent = data.message;
-    }).then(() => console.log('scan:error listener registered'))
-      .catch(err => console.error('Failed to register scan:error listener:', err));
+    }).catch(err => console.error('Failed to register scan:error listener:', err));
 }
 
 setupScanListeners();
 
 // ─── Render Functions ───
 
-function renderUsageResults() {
+// ─── Usage Tree ───
+
+/// Render the tree skeleton from Rust's structure data.
+/// Each row shows the folder name with "—" for stats.
+function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; children: string[] }>, totalFolders: number) {
     const container = document.getElementById('usage-results')!;
-    if (scanResults.usage.length === 0) return;
+    expandedPaths.clear();
 
-    // Sort by size descending
-    scanResults.usage.sort((a, b) => b.size - a.size);
-    const maxSize = scanResults.usage[0].size;
+    // Normalize all paths to forward slashes for consistent matching
+    const pathSet = new Set(folders.map(f => f.path.replace(/\\/g, '/')));
 
-    let html = '<table class="analytics-table">';
-    html += '<tr><th>Path</th><th>Size</th><th>Files</th><th>Folders</th></tr>';
-    for (const usage of scanResults.usage) {
-        const barWidth = (usage.size / maxSize) * 100;
-        html += `<tr>
-            <td>${usage.path}</td>
-            <td>
-                ${formatSize(usage.size)}
-                <span class="size-bar" style="width: ${barWidth}px;"></span>
-            </td>
-            <td>${usage.fileCount.toLocaleString()}</td>
-            <td>${usage.folderCount.toLocaleString()}</td>
-        </tr>`;
+    // Build parent map: for each folder, find its parent in the list
+    const parentMap = new Map<string, string | null>();
+
+    for (const folder of folders) {
+        const normalized = folder.path.replace(/\\/g, '/');
+        const lastSlash = normalized.lastIndexOf('/');
+        const parentPath = lastSlash > 0 ? normalized.slice(0, lastSlash) : null;
+
+        let resolvedParent: string | null = null;
+        if (parentPath) {
+            // Try exact match, then with trailing slash (drive roots: "C:" → "C:/")
+            // IMPORTANT: exclude self-matches (e.g., "C:/" shouldn't be its own parent)
+            if (parentPath !== normalized && pathSet.has(parentPath)) {
+                resolvedParent = folders.find(f => f.path.replace(/\\/g, '/') === parentPath)?.path ?? null;
+            } else if (!parentPath.endsWith('/') && parentPath + '/' !== normalized && pathSet.has(parentPath + '/')) {
+                resolvedParent = folders.find(f => f.path.replace(/\\/g, '/') === parentPath + '/')?.path ?? null;
+            }
+        }
+        parentMap.set(folder.path, resolvedParent);
     }
-    html += '</table>';
-    container.innerHTML = html;
+
+    // Find root folders (no parent in the map)
+    const roots = folders.filter(f => !parentMap.get(f.path));
+
+    // Tree skeleton built from structure data
+
+    // Auto-expand all on first render
+    for (const folder of folders) {
+        expandedPaths.add(folder.path);
+    }
+
+    container.innerHTML = '';
+
+    // Header row
+    const header = document.createElement('div');
+    header.className = 'usage-tree-header';
+    header.innerHTML = `
+        <span class="tree-col-name">Name</span>
+        <span class="tree-col-size">Size</span>
+        <span class="tree-col-bar"></span>
+        <span class="tree-col-files">Files</span>
+        <span class="tree-col-folders">Folders</span>
+    `;
+    container.appendChild(header);
+
+    // Tree body
+    const body = document.createElement('div');
+    body.className = 'usage-tree-body';
+
+    for (const root of roots) {
+        body.appendChild(createSkeletonRow(root, parentMap, folders));
+    }
+    container.appendChild(body);
+
+    // Tree skeleton rendered
 }
+
+/// Create a skeleton row and its children recursively.
+function createSkeletonRow(
+    folder: { path: string; name: string; children: string[] },
+    parentMap: Map<string, string | null>,
+    allFolders: Array<{ path: string; name: string; children: string[] }>,
+    depth: number = 0,
+): HTMLElement {
+    // Find actual children (folders whose parent is this folder)
+    const childFolders = allFolders.filter(f => parentMap.get(f.path) === folder.path);
+    const hasChildren = childFolders.length > 0;
+    const isExpanded = expandedPaths.has(folder.path);
+
+    // Row
+    const row = document.createElement('div');
+    row.className = 'usage-tree-row';
+    row.dataset.path = folder.path;
+
+    // Indent
+    const indent = document.createElement('span');
+    indent.className = 'tree-indent';
+    indent.style.width = `${depth * 16}px`;
+
+    // Toggle
+    const toggle = document.createElement('span');
+    toggle.className = 'tree-toggle' + (isExpanded ? ' expanded' : '');
+    toggle.textContent = hasChildren ? '▶' : '';
+
+    // Icon
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.textContent = '📁';
+
+    // Name
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = folder.name;
+
+    // Stats placeholders
+    const size = document.createElement('span');
+    size.className = 'tree-size';
+    size.textContent = '—';
+
+    const bar = document.createElement('span');
+    bar.className = 'tree-size-bar';
+    bar.style.width = '0px';
+
+    const files = document.createElement('span');
+    files.className = 'tree-files';
+    files.textContent = '—';
+
+    const folders = document.createElement('span');
+    folders.className = 'tree-folders';
+    folders.textContent = '—';
+
+    // Name cell
+    const nameCell = document.createElement('span');
+    nameCell.className = 'tree-name-cell';
+    nameCell.appendChild(indent);
+    nameCell.appendChild(toggle);
+    nameCell.appendChild(icon);
+    nameCell.appendChild(name);
+
+    row.appendChild(nameCell);
+    row.appendChild(size);
+    row.appendChild(bar);
+    row.appendChild(files);
+    row.appendChild(folders);
+
+    // Click to toggle
+    row.addEventListener('click', () => {
+        if (!hasChildren) return;
+        if (expandedPaths.has(folder.path)) {
+            expandedPaths.delete(folder.path);
+        } else {
+            expandedPaths.add(folder.path);
+        }
+        // Toggle children visibility
+        const childrenContainer = row.nextElementSibling as HTMLElement | null;
+        if (childrenContainer) {
+            childrenContainer.classList.toggle('expanded');
+            // Update toggle icon
+            const toggleEl = row.querySelector('.tree-toggle') as HTMLElement;
+            if (toggleEl) toggleEl.classList.toggle('expanded');
+        }
+    });
+
+    // Children container
+    const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'usage-tree-children' + (isExpanded ? ' expanded' : '');
+
+    if (isExpanded) {
+        for (const child of childFolders) {
+            childrenContainer.appendChild(createSkeletonRow(child, parentMap, allFolders, depth + 1));
+        }
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.appendChild(row);
+    wrapper.appendChild(childrenContainer);
+
+    return wrapper;
+}
+
+/// Patch a single row when its stats arrive.
+function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
+    // The row's data-path is set from the structure event path.
+    // The chunk path might differ in format, so we need to match flexibly.
+    const chunkPath = usage.path.replace(/\\/g, '/');
+    const escapeAttr = (s: string) => (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(s) : s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Try exact match first, then with/without trailing slash
+    let row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(usage.path)}"]`);
+    if (!row) {
+        row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(chunkPath)}"]`);
+    }
+    if (!row) {
+        // Try stripping/adding trailing slash
+        const altPath = chunkPath.endsWith('/') ? chunkPath.slice(0, -1) : chunkPath + '/';
+        row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(altPath)}"]`);
+    }
+    if (!row) {
+        if (scanResults.usage.length <= 3) {
+            console.warn('patchUsageRow: no row found for', usage.path);
+        }
+        return;
+    }
+
+    const sizeEl = row.querySelector('.tree-size') as HTMLElement;
+    const barEl = row.querySelector('.tree-size-bar') as HTMLElement;
+    const filesEl = row.querySelector('.tree-files') as HTMLElement;
+    const foldersEl = row.querySelector('.tree-folders') as HTMLElement;
+
+    if (sizeEl) sizeEl.textContent = formatSize(usage.size);
+    if (barEl) {
+        const maxSize = Math.max(...scanResults.usage.map(u => u.size), 1);
+        barEl.style.width = `${Math.max(0, (usage.size / maxSize) * 100)}px`;
+    }
+    if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
+    if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
+}
+
 
 function renderLargeFilesResults() {
     const container = document.getElementById('large-files-results')!;

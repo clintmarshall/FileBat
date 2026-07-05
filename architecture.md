@@ -175,6 +175,15 @@ Native filesystem watch events update the current folder view without polling.
 ### 9. Icon caching
 `HashMap<PathBuf, IconHandle>` in the backend. Icons are base64-encoded and sent once per file type.
 
+### 10. Three-phase disk usage scanning
+**Phase 1 — Structure (recursive readdir):** Walk the entire directory tree using `readdir` only. Zero file stats, zero `metadata()` calls. Builds the complete folder hierarchy with parent→children relationships. Emits `scan:structure` so the frontend renders the full tree instantly.
+
+**Phase 2 — Leaf Sizing (parallel, 10 threads):** Only folders with no subdirectories (leaves) are queued for sizing. Each thread walks one leaf folder with WalkDir, counting files, subfolders, and total size. Every file on disk is visited exactly once. Results are emitted as `scan:chunk` events and stored in a shared HashMap.
+
+**Phase 3 — Rollup (bottom-up):** After all leaves are sized, walk the tree bottom-up. Each parent's `size`, `fileCount`, `folderCount` = sum of its direct children's values. Emit `scan:chunk` for each parent so the frontend patches all rows.
+
+**Why not walk every folder?** The previous approach walked every folder's entire subtree. A file in `E:/Users/Clint/docs/notes.txt` was visited 4+ times (once per ancestor). With leaf-only sizing + rollup, every file is visited exactly once. Parent totals are a cheap in-memory sum.
+
 ---
 
 ## Dependencies
@@ -267,7 +276,25 @@ pub struct FolderUsage {
     pub size: u64,
     pub file_count: u64,
     pub folder_count: u64,
-    pub depth: u32,
+}
+```
+
+### FolderStructure (Tree Shape)
+```rust
+pub struct FolderStructure {
+    pub path: String,
+    pub name: String,
+    pub children: Vec<String>,  // Direct child folder paths
+}
+```
+
+### ScanStructure (Phase 1 Output)
+```rust
+pub struct ScanStructure {
+    pub scan_id: String,
+    pub root_path: String,
+    pub folders: Vec<FolderStructure>,
+    pub total_folders: usize,
 }
 ```
 
