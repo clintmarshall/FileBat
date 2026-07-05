@@ -103,12 +103,17 @@ impl DiskUsageUseCase {
             let leaf_results_clone = leaf_results.clone();
             let cancel_size = cancel_blocking.clone();
 
+            // Notification channel — sizing threads signal when a leaf is done
+            // so the main thread can check for incremental rollup opportunities.
+            let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
             let mut sizing_handles = Vec::new();
             for _ in 0..10 {
                 let rx = work_rx.clone();
                 let tx_t = tx_clone.clone();
                 let results = leaf_results_clone.clone();
                 let cancel_t = cancel_size.clone();
+                let notify = notify_tx.clone();
 
                 let handle = std::thread::spawn(move || {
                     loop {
@@ -135,6 +140,9 @@ impl DiskUsageUseCase {
 
                         // Emit to frontend
                         let _ = tx_t.send(ScanStep::Folder(result));
+
+                        // Notify main thread to check for rollup
+                        let _ = notify.send(());
                     }
                 });
 
@@ -235,6 +243,130 @@ impl DiskUsageUseCase {
             // Close sizing work queue — threads will drain and exit
             drop(work_tx);
 
+            // ─── Incremental Rollup Loop ───
+            // Wait for sizing completions via notify_rx. After each leaf,
+            // check which parents now have all children sized → roll up → emit.
+            // Cascade upward: if a parent is rolled up, its own parent might now be ready.
+
+            let pc = parent_children.lock().unwrap().clone();
+            let mut rolled_up: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            // Wait for sizing completions via notify_rx. After each leaf,
+            // check which parents now have all children sized → roll up → emit.
+            loop {
+                if cancel_blocking.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // Wait for a sizing completion notification (with timeout)
+                match notify_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(()) => {
+                        // Try to roll up parents whose children are all sized
+                        let mut newly_rolled: Vec<String> = Vec::new();
+
+                        for (parent, children) in &pc {
+                            if rolled_up.contains(parent) {
+                                continue; // Already rolled up
+                            }
+
+                            // Check if all children are sized (leaf or rolled-up parent)
+                            let all_sized = children.iter().all(|c| {
+                                leaf_results.lock().unwrap().contains_key(c)
+                            });
+
+                            if all_sized {
+                                // Roll up this parent
+                                let mut total_size: u64 = 0;
+                                let mut total_files: u64 = 0;
+                                let mut total_folders: u64 = 0;
+
+                                for child_path in children {
+                                    if let Some(child_stats) = leaf_results.lock().unwrap().get(child_path) {
+                                        total_size += child_stats.size;
+                                        total_files += child_stats.file_count;
+                                        total_folders += 1 + child_stats.folder_count;
+                                    }
+                                }
+
+                                let usage = FolderUsage {
+                                    path: parent.clone(),
+                                    size: total_size,
+                                    file_count: total_files,
+                                    folder_count: total_folders,
+                                };
+
+                                // Store for further rollup
+                                leaf_results.lock().unwrap().insert(parent.clone(), usage.clone());
+                                rolled_up.insert(parent.clone());
+
+                                // Emit to frontend
+                                let _ = tx.send(ScanStep::Folder(usage));
+                                newly_rolled.push(parent.clone());
+                            }
+                        }
+
+                        // If we rolled up parents, their parents might now be ready
+                        // Keep checking until no more rollups happen
+                        let mut changed = !newly_rolled.is_empty();
+                        while changed {
+                            changed = false;
+                            let mut round_rolled: Vec<String> = Vec::new();
+
+                            for (parent, children) in &pc {
+                                if rolled_up.contains(parent) {
+                                    continue;
+                                }
+
+                                let all_sized = children.iter().all(|c| {
+                                    leaf_results.lock().unwrap().contains_key(c)
+                                });
+
+                                if all_sized {
+                                    let mut total_size: u64 = 0;
+                                    let mut total_files: u64 = 0;
+                                    let mut total_folders: u64 = 0;
+
+                                    for child_path in children {
+                                        if let Some(child_stats) = leaf_results.lock().unwrap().get(child_path) {
+                                            total_size += child_stats.size;
+                                            total_files += child_stats.file_count;
+                                            total_folders += 1 + child_stats.folder_count;
+                                        }
+                                    }
+
+                                    let usage = FolderUsage {
+                                        path: parent.clone(),
+                                        size: total_size,
+                                        file_count: total_files,
+                                        folder_count: total_folders,
+                                    };
+
+                                    leaf_results.lock().unwrap().insert(parent.clone(), usage.clone());
+                                    rolled_up.insert(parent.clone());
+                                    let _ = tx.send(ScanStep::Folder(usage));
+                                    round_rolled.push(parent.clone());
+                                    changed = true;
+                                }
+                            }
+
+                            if !round_rolled.is_empty() {
+                                newly_rolled.extend(round_rolled);
+                            }
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // No completions yet — check if all threads are done
+                        let all_done = sizing_handles.iter().all(|h| h.is_finished());
+                        if all_done {
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        break;
+                    }
+                }
+            }
+
             // Wait for all sizing threads
             for handle in sizing_handles {
                 let _ = handle.join();
@@ -243,60 +375,6 @@ impl DiskUsageUseCase {
             if cancel_blocking.load(Ordering::Relaxed) {
                 let _ = tx.send(ScanStep::Cancelled);
                 return;
-            }
-
-            // ─── Rollup ───
-
-            let pc = parent_children.lock().unwrap().clone();
-
-            // Collect all folder paths (parents + children) for bottom-up rollup
-            let mut all_paths: Vec<String> = Vec::new();
-            for (parent, children) in &pc {
-                all_paths.push(parent.clone());
-                all_paths.extend(children.clone());
-            }
-
-            let mut stats = leaf_results.lock().unwrap().clone();
-
-            // Roll up: process folders bottom-up (children before parents)
-            // Sort by path depth descending as an approximation
-            all_paths.sort_by_key(|a| a.chars().filter(|c| *c == '/').count());
-            all_paths.reverse();
-
-            for folder_path in &all_paths {
-                let children: Vec<String> = pc.get(folder_path).cloned().unwrap_or_default();
-                if children.is_empty() {
-                    continue; // Leaf — already sized
-                }
-
-                let mut total_size: u64 = 0;
-                let mut total_files: u64 = 0;
-                let mut total_folders: u64 = 0;
-
-                for child_path in &children {
-                    if let Some(child_stats) = stats.get(child_path) {
-                        total_size += child_stats.size;
-                        total_files += child_stats.file_count;
-                        total_folders += 1 + child_stats.folder_count;
-                    }
-                }
-
-                stats.insert(
-                    folder_path.clone(),
-                    FolderUsage {
-                        path: folder_path.clone(),
-                        size: total_size,
-                        file_count: total_files,
-                        folder_count: total_folders,
-                    },
-                );
-            }
-
-            // Emit rolled-up stats for non-leaf folders
-            for (folder_path, _children) in &pc {
-                if let Some(usage) = stats.get(folder_path) {
-                    let _ = tx.send(ScanStep::Folder(usage.clone()));
-                }
             }
 
             let _ = tx.send(ScanStep::Complete);

@@ -993,6 +993,10 @@ function renderTreeRow(folder: { path: string; name: string }, depth: number): H
     const hasChildren = knownChildren.has(folder.path);
     const isExpanded = expandedPaths.has(folder.path);
 
+    if (depth <= 1) {
+        console.log('[DEBUG] renderTreeRow:', folder.path, 'hasChildren:', hasChildren, 'expanded:', isExpanded, 'stats:', folderStats.has(folder.path));
+    }
+
     // Row
     const row = document.createElement('div');
     row.className = 'usage-tree-row';
@@ -1135,6 +1139,13 @@ function findTreeRow(path: string): HTMLElement | null {
         if (row) return row;
     }
 
+    if (scanResults.usage.length <= 10) {
+        console.log('[DEBUG] findTreeRow: no match for', path, '(normalized:', normalized + ')');
+        // Log what paths exist
+        document.querySelectorAll('.usage-tree-row').forEach(r => {
+            console.log('  existing row:', r.getAttribute('data-path'));
+        });
+    }
     return null;
 }
 
@@ -1153,6 +1164,10 @@ function enableExpandButton(path: string, childCount: number) {
 /// Patch a single row when its stats arrive.
 /// Stores stats regardless of whether the row exists (row may not be expanded yet).
 function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
+    if (scanResults.usage.length <= 10) {
+        console.log('[DEBUG] patchUsageRow:', usage.path, 'size:', usage.size);
+    }
+
     // Store stats for when the row is created
     folderStats.set(usage.path, {
         size: usage.size,
