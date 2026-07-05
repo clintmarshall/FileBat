@@ -3,17 +3,6 @@
 //! These tests create temp directories, populate them with files,
 //! and verify the analytics engine works end-to-end.
 
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
-// We need to test the actual use cases, so we re-export what we need
-// from the main binary. Since Rust doesn't let us import private modules,
-// we'll test through the public API.
-
-// For now, test the StdFileSystem directly
 mod file_system_tests {
     use std::fs;
     use std::io::Write;

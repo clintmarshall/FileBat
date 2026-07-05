@@ -68,17 +68,6 @@ pub struct FolderUsage {
     pub folder_count: u64,
 }
 
-/// A single folder in the directory structure tree.
-/// Sent during Phase 1 (structure scan) so the frontend can render the tree immediately.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct FolderStructure {
-    pub path: String,
-    pub name: String,
-    /// Direct child folder paths (immediate children only).
-    pub children: Vec<String>,
-}
-
 /// A single child folder in a tree children response.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
