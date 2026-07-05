@@ -69,19 +69,19 @@ let analyticsVisible = false;
 let activeScanId: string | null = null;
 let currentTab: string = 'usage';
 let scanResults: {
-    usage: Array<{ path: string; size: number; fileCount: number; folderCount: number }>;
     largeFiles: Entry[];
     duplicates: Array<{ hash: string; sizeEach: number; files: string[]; wastedSpace: number }>;
-} = { usage: [], largeFiles: [], duplicates: [] };
+} = { largeFiles: [], duplicates: [] };
 
 // Tree expansion state — persists across incremental re-renders
 const expandedPaths = new Set<string>();
 
-// Tree state — known children per folder (populated by scan:children_ready)
-const knownChildren = new Map<string, Array<{ path: string; name: string }>>();
-
-// Tree stats — usage data per folder (populated by scan:chunk)
-const folderStats = new Map<string, { size: number; fileCount: number; folderCount: number }>();
+// Single tree store — children + stats per folder.
+// Populated by scan:children_ready (children) and scan:chunk (stats).
+const knownChildren = new Map<string, {
+    children: Array<{ path: string; name: string }>;
+    stats?: { size: number; fileCount: number; folderCount: number };
+}>();
 
 function getSelectedPaths(): string[] {
   const paths: string[] = [];
@@ -749,11 +749,10 @@ async function startScan() {
     }
 
     // Reset results
-    scanResults = { usage: [], largeFiles: [], duplicates: [] };
+    scanResults = { largeFiles: [], duplicates: [] };
     activeScanId = null;
     expandedPaths.clear();
     knownChildren.clear();
-    folderStats.clear();
 
     // Show progress
     analyticsProgress.classList.remove('hidden');
@@ -823,22 +822,32 @@ function clearTabResults(containerId: string, message: string) {
 }
 
 async function saveSnapshot() {
-    if (scanResults.usage.length === 0) {
+    // Collect usage data from the tree
+    const usageData: Array<{ path: string; size: number; fileCount: number; folderCount: number }> = [];
+    for (const [path, node] of knownChildren) {
+        if (node.stats) {
+            usageData.push({ path, ...node.stats });
+        }
+    }
+
+    if (usageData.length === 0) {
         statusInfoEl.textContent = 'No usage data to snapshot. Run a disk usage scan first.';
         return;
     }
 
+    // Sort by size descending for top folders
+    usageData.sort((a, b) => b.size - a.size);
+
     try {
-        const topFolders = JSON.stringify(scanResults.usage.slice(0, 10));
-        const totalSize = scanResults.usage.reduce((sum, u) => sum + u.size, 0);
-        const totalFiles = scanResults.usage.reduce((sum, u) => sum + u.fileCount, 0);
-        const totalFolders = scanResults.usage.reduce((sum, u) => sum + u.folderCount, 0);
+        const topFolders = JSON.stringify(usageData.slice(0, 10));
+        // Root folder is the largest — use it for totals
+        const root = usageData[0];
 
         await invoke('snapshot_usage', {
             path: scanPathInput.value,
-            totalSize,
-            fileCount: totalFiles,
-            folderCount: totalFolders,
+            totalSize: root.size,
+            fileCount: root.fileCount,
+            folderCount: root.folderCount,
             topFolders: topFolders,
         });
 
@@ -897,15 +906,19 @@ function setupScanListeners() {
         const info = event.payload as { scanId: string; rootPath: string; rootName: string };
         knownChildren.clear();
         expandedPaths.clear();
-        folderStats.clear();
         renderTreeRoot(info.rootPath, info.rootName);
     }).catch(err => console.error('Failed to register scan:tree_started listener:', err));
 
-    // Children ready — enable expand button for the folder
+    // Children ready — enable expand button + render children if parent is expanded
     listen('scan:children_ready', (event) => {
         const data = event.payload as { scanId: string; parentPath: string; children: Array<{ path: string; name: string }> };
-        knownChildren.set(data.parentPath, data.children);
+        knownChildren.set(data.parentPath, { children: data.children });
         enableExpandButton(data.parentPath, data.children.length);
+
+        // If the parent is already expanded, render children now
+        if (expandedPaths.has(data.parentPath)) {
+            renderChildrenForParent(data.parentPath);
+        }
     }).catch(err => console.error('Failed to register scan:children_ready listener:', err));
 
     listen('scan:progress', (event) => {
@@ -921,7 +934,6 @@ function setupScanListeners() {
         const data = chunk.data;
 
         if (data.type === 'folder_usage') {
-            scanResults.usage.push(data.usage);
             patchUsageRow(data.usage);
         } else if (data.type === 'large_file') {
             scanResults.largeFiles.push(data.entry);
@@ -985,17 +997,16 @@ function renderTreeRoot(path: string, name: string) {
 
     // Clear body and render root
     body.innerHTML = '';
+    expandedPaths.add(path); // Auto-expand root so children render when discovered
     body.appendChild(renderTreeRow({ path, name }, 0));
 }
 
 /// Render a single tree row. Toggle is disabled until children are discovered.
 function renderTreeRow(folder: { path: string; name: string }, depth: number): HTMLElement {
-    const hasChildren = knownChildren.has(folder.path);
+    const node = knownChildren.get(folder.path);
+    const hasChildren = node !== undefined;
     const isExpanded = expandedPaths.has(folder.path);
-
-    if (depth <= 1) {
-        console.log('[DEBUG] renderTreeRow:', folder.path, 'hasChildren:', hasChildren, 'expanded:', isExpanded, 'stats:', folderStats.has(folder.path));
-    }
+    const stats = node?.stats;
 
     // Row
     const row = document.createElement('div');
@@ -1023,27 +1034,26 @@ function renderTreeRow(folder: { path: string; name: string }, depth: number): H
     name.textContent = folder.name;
 
     // Stats — apply stored stats if available, otherwise placeholders
-    const storedStats = folderStats.get(folder.path);
     const size = document.createElement('span');
     size.className = 'tree-size';
-    size.textContent = storedStats ? formatSize(storedStats.size) : '—';
+    size.textContent = stats ? formatSize(stats.size) : '—';
 
     const bar = document.createElement('span');
     bar.className = 'tree-size-bar';
-    if (storedStats) {
-        const maxSize = Math.max(...scanResults.usage.map(u => u.size), 1);
-        bar.style.width = `${Math.max(0, (storedStats.size / maxSize) * 100)}px`;
+    if (stats) {
+        const maxSize = getMaxFolderSize();
+        bar.style.width = `${Math.max(0, (stats.size / maxSize) * 100)}px`;
     } else {
         bar.style.width = '0px';
     }
 
     const files = document.createElement('span');
     files.className = 'tree-files';
-    files.textContent = storedStats ? storedStats.fileCount.toLocaleString() : '—';
+    files.textContent = stats ? stats.fileCount.toLocaleString() : '—';
 
     const folders = document.createElement('span');
     folders.className = 'tree-folders';
-    folders.textContent = storedStats ? storedStats.folderCount.toLocaleString() : '—';
+    folders.textContent = stats ? stats.folderCount.toLocaleString() : '—';
 
     // Name cell
     const nameCell = document.createElement('span');
@@ -1068,8 +1078,7 @@ function renderTreeRow(folder: { path: string; name: string }, depth: number): H
 
     // If already expanded and children known, render them
     if (isExpanded && hasChildren) {
-        const children = knownChildren.get(folder.path)!;
-        for (const child of children) {
+        for (const child of node!.children) {
             childrenContainer.appendChild(renderTreeRow(child, depth + 1));
         }
     }
@@ -1083,8 +1092,8 @@ function renderTreeRow(folder: { path: string; name: string }, depth: number): H
 
 /// Handle expand/collapse click on a tree row.
 async function handleTreeExpand(path: string, row: HTMLElement, depth: number) {
-    const children = knownChildren.get(path);
-    if (!children) return; // Children not yet discovered
+    const node = knownChildren.get(path);
+    if (!node) return; // Children not yet discovered
 
     const isExpanded = expandedPaths.has(path);
     const childrenContainer = row.nextElementSibling as HTMLElement | null;
@@ -1104,7 +1113,7 @@ async function handleTreeExpand(path: string, row: HTMLElement, depth: number) {
 
         // Render children if not already rendered
         if (childrenContainer && childrenContainer.children.length === 0) {
-            for (const child of children) {
+            for (const child of node.children) {
                 childrenContainer.appendChild(renderTreeRow(child, depth + 1));
             }
         }
@@ -1139,13 +1148,6 @@ function findTreeRow(path: string): HTMLElement | null {
         if (row) return row;
     }
 
-    if (scanResults.usage.length <= 10) {
-        console.log('[DEBUG] findTreeRow: no match for', path, '(normalized:', normalized + ')');
-        // Log what paths exist
-        document.querySelectorAll('.usage-tree-row').forEach(r => {
-            console.log('  existing row:', r.getAttribute('data-path'));
-        });
-    }
     return null;
 }
 
@@ -1161,18 +1163,51 @@ function enableExpandButton(path: string, childCount: number) {
     }
 }
 
-/// Patch a single row when its stats arrive.
-/// Stores stats regardless of whether the row exists (row may not be expanded yet).
-function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
-    if (scanResults.usage.length <= 10) {
-        console.log('[DEBUG] patchUsageRow:', usage.path, 'size:', usage.size);
-    }
+/// Render children for a parent when they become available (scan:children_ready).
+/// Only renders if the parent is expanded and children aren't already rendered.
+function renderChildrenForParent(path: string) {
+    const row = findTreeRow(path) as HTMLElement;
+    if (!row) return;
 
-    // Store stats for when the row is created
-    folderStats.set(usage.path, {
-        size: usage.size,
-        fileCount: usage.fileCount,
-        folderCount: usage.folderCount,
+    const childrenContainer = row.nextElementSibling as HTMLElement | null;
+    if (!childrenContainer || childrenContainer.children.length > 0) return;
+
+    const node = knownChildren.get(path);
+    if (!node) return;
+
+    // Find depth from the row's indent
+    const nameCell = row.querySelector('.tree-name-cell') as HTMLElement;
+    const indent = nameCell?.querySelector('.tree-indent') as HTMLElement;
+    const depth = indent ? parseInt(indent.style.width.replace('px', '')) / 16 : 0;
+
+    for (const child of node.children) {
+        childrenContainer.appendChild(renderTreeRow(child, depth + 1));
+    }
+}
+
+/// Get the max folder size across all known folders (for size-bar scaling).
+function getMaxFolderSize(): number {
+    let max = 0;
+    for (const node of knownChildren.values()) {
+        if (node.stats && node.stats.size > max) {
+            max = node.stats.size;
+        }
+    }
+    return max || 1;
+}
+
+/// Patch a single row when its stats arrive.
+/// Stores stats in knownChildren so they persist for future expands.
+function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
+    // Store stats in the tree node (creates entry if children not yet discovered)
+    const existing = knownChildren.get(usage.path);
+    knownChildren.set(usage.path, {
+        children: existing?.children ?? [],
+        stats: {
+            size: usage.size,
+            fileCount: usage.fileCount,
+            folderCount: usage.folderCount,
+        },
     });
 
     // Also try to patch the row if it exists
@@ -1186,7 +1221,7 @@ function patchUsageRow(usage: { path: string; size: number; fileCount: number; f
 
     if (sizeEl) sizeEl.textContent = formatSize(usage.size);
     if (barEl) {
-        const maxSize = Math.max(...scanResults.usage.map(u => u.size), 1);
+        const maxSize = getMaxFolderSize();
         barEl.style.width = `${Math.max(0, (usage.size / maxSize) * 100)}px`;
     }
     if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();

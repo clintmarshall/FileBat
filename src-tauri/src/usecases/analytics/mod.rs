@@ -25,23 +25,24 @@ use std::time::Instant;
 pub struct AnalyticsUseCase {
     /// Shared state for tracking active scans (cancel flags).
     scans: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    /// Tree structure per scan — parent_path → list of child paths.
+    /// Single tree store — parent_path → list of children per scan.
     /// Populated by disk_usage scan, queried by get_scan_tree_children.
-    tree_state: Arc<Mutex<HashMap<String, HashMap<String, Vec<ScanTreeChild>>>>>,
+    /// Replaces the old tree_state + parent_children duplication.
+    tree: Arc<Mutex<HashMap<String, HashMap<String, Vec<ScanTreeChild>>>>>,
 }
 
 impl AnalyticsUseCase {
     pub fn new() -> Self {
         Self {
             scans: Arc::new(Mutex::new(HashMap::new())),
-            tree_state: Arc::new(Mutex::new(HashMap::new())),
+            tree: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Get children for a folder in the tree state.
+    /// Get children for a folder in the tree.
     pub fn get_children(&self, scan_id: &str, parent_path: &str) -> Option<Vec<ScanTreeChild>> {
-        let tree = self.tree_state.lock().unwrap();
-        tree.get(scan_id)?
+        let t = self.tree.lock().unwrap();
+        t.get(scan_id)?
             .get(parent_path)
             .cloned()
     }
@@ -98,10 +99,10 @@ impl AnalyticsUseCase {
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
 
-        // Initialize tree state for this scan
+        // Initialize tree for this scan
         {
-            let mut tree = self.tree_state.lock().unwrap();
-            tree.entry(id_run.clone()).or_insert_with(HashMap::new);
+            let mut t = self.tree.lock().unwrap();
+            t.entry(id_run.clone()).or_insert_with(HashMap::new);
         }
 
         // run() returns a future that resolves when the scan + emission is fully done
@@ -112,7 +113,7 @@ impl AnalyticsUseCase {
             cancel_clone,
             start,
             id_run.clone(),
-            self.tree_state.clone(),
+            self.tree.clone(),
         )
         .await;
 
