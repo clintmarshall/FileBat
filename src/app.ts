@@ -967,9 +967,9 @@ function renderUsageTreeSkeleton(folders: Array<{ path: string; name: string; ch
     // Find root folders (no parent in the map)
     const roots = folders.filter(f => !parentMap.get(f.path));
 
-    // Auto-expand root folders only
-    for (const folder of folders) {
-        expandedPaths.add(folder.path);
+    // Only expand the root — children render on user expand
+    for (const root of roots) {
+        expandedPaths.add(root.path);
     }
 
     container.innerHTML = '';

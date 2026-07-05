@@ -137,18 +137,17 @@ describe('Analytics — Disk Usage Scan', () => {
       rootPath: 'C:/',
       folders: [
         { path: 'C:/', name: 'C:/', children: ['C:/Windows', 'C:/Users'] },
-        { path: 'C:/Windows', name: 'Windows', children: ['C:/Windows/System32'] },
-        { path: 'C:/Windows/System32', name: 'System32', children: [] },
+        { path: 'C:/Windows', name: 'Windows', children: [] },
         { path: 'C:/Users', name: 'Users', children: [] },
       ],
-      totalFolders: 4,
+      totalFolders: 3,
     });
     await flushPromises();
 
     const results = document.getElementById('usage-results')!;
     expect(results.innerHTML).toContain('usage-tree-header');
     expect(results.innerHTML).toContain('Windows');
-    expect(results.innerHTML).toContain('System32');
+    expect(results.innerHTML).toContain('Users');
 
     // Phase 2: emit chunk to patch the row
     emitEvent('scan:chunk', {
