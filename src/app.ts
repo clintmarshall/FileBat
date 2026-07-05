@@ -80,6 +80,9 @@ const expandedPaths = new Set<string>();
 // Tree state — known children per folder (populated by scan:children_ready)
 const knownChildren = new Map<string, Array<{ path: string; name: string }>>();
 
+// Tree stats — usage data per folder (populated by scan:chunk)
+const folderStats = new Map<string, { size: number; fileCount: number; folderCount: number }>();
+
 function getSelectedPaths(): string[] {
   const paths: string[] = [];
   for (const idx of selectedIndices) {
@@ -750,6 +753,7 @@ async function startScan() {
     activeScanId = null;
     expandedPaths.clear();
     knownChildren.clear();
+    folderStats.clear();
 
     // Show progress
     analyticsProgress.classList.remove('hidden');
@@ -893,6 +897,7 @@ function setupScanListeners() {
         const info = event.payload as { scanId: string; rootPath: string; rootName: string };
         knownChildren.clear();
         expandedPaths.clear();
+        folderStats.clear();
         renderTreeRoot(info.rootPath, info.rootName);
     }).catch(err => console.error('Failed to register scan:tree_started listener:', err));
 
@@ -1013,22 +1018,28 @@ function renderTreeRow(folder: { path: string; name: string }, depth: number): H
     name.className = 'tree-name';
     name.textContent = folder.name;
 
-    // Stats placeholders
+    // Stats — apply stored stats if available, otherwise placeholders
+    const storedStats = folderStats.get(folder.path);
     const size = document.createElement('span');
     size.className = 'tree-size';
-    size.textContent = '—';
+    size.textContent = storedStats ? formatSize(storedStats.size) : '—';
 
     const bar = document.createElement('span');
     bar.className = 'tree-size-bar';
-    bar.style.width = '0px';
+    if (storedStats) {
+        const maxSize = Math.max(...scanResults.usage.map(u => u.size), 1);
+        bar.style.width = `${Math.max(0, (storedStats.size / maxSize) * 100)}px`;
+    } else {
+        bar.style.width = '0px';
+    }
 
     const files = document.createElement('span');
     files.className = 'tree-files';
-    files.textContent = '—';
+    files.textContent = storedStats ? storedStats.fileCount.toLocaleString() : '—';
 
     const folders = document.createElement('span');
     folders.className = 'tree-folders';
-    folders.textContent = '—';
+    folders.textContent = storedStats ? storedStats.folderCount.toLocaleString() : '—';
 
     // Name cell
     const nameCell = document.createElement('span');
@@ -1096,10 +1107,40 @@ async function handleTreeExpand(path: string, row: HTMLElement, depth: number) {
     }
 }
 
+/// Escape a string for use inside a CSS attribute selector value.
+/// CSS.escape escapes / as \/ which breaks attribute matching.
+/// We only need to escape " and \ for attribute values.
+function escapeAttr(s: string): string {
+    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/// Find a tree row by path, trying common format variations.
+function findTreeRow(path: string): HTMLElement | null {
+    const normalized = path.replace(/\\/g, '/');
+
+    // Try exact match
+    let row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(path)}"]`);
+    if (row) return row;
+
+    // Try normalized (backslashes → forward slashes)
+    row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(normalized)}"]`);
+    if (row) return row;
+
+    // Try with/without trailing slash (drive roots: "C:" vs "C:/")
+    if (normalized.endsWith('/')) {
+        row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(normalized.slice(0, -1))}"]`);
+        if (row) return row;
+    } else {
+        row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(normalized + '/')}"]`);
+        if (row) return row;
+    }
+
+    return null;
+}
+
 /// Enable the expand button for a folder when children are discovered.
 function enableExpandButton(path: string, childCount: number) {
-    const escapeAttr = (s: string) => (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(s) : s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(path)}"]`) as HTMLElement;
+    const row = findTreeRow(path) as HTMLElement;
     if (!row) return;
 
     const toggle = row.querySelector('.tree-toggle') as HTMLElement;
@@ -1110,28 +1151,18 @@ function enableExpandButton(path: string, childCount: number) {
 }
 
 /// Patch a single row when its stats arrive.
+/// Stores stats regardless of whether the row exists (row may not be expanded yet).
 function patchUsageRow(usage: { path: string; size: number; fileCount: number; folderCount: number }) {
-    // The row's data-path is set from the structure event path.
-    // The chunk path might differ in format, so we need to match flexibly.
-    const chunkPath = usage.path.replace(/\\/g, '/');
-    const escapeAttr = (s: string) => (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(s) : s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Store stats for when the row is created
+    folderStats.set(usage.path, {
+        size: usage.size,
+        fileCount: usage.fileCount,
+        folderCount: usage.folderCount,
+    });
 
-    // Try exact match first, then with/without trailing slash
-    let row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(usage.path)}"]`);
-    if (!row) {
-        row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(chunkPath)}"]`);
-    }
-    if (!row) {
-        // Try stripping/adding trailing slash
-        const altPath = chunkPath.endsWith('/') ? chunkPath.slice(0, -1) : chunkPath + '/';
-        row = document.querySelector(`.usage-tree-row[data-path="${escapeAttr(altPath)}"]`);
-    }
-    if (!row) {
-        if (scanResults.usage.length <= 3) {
-            console.warn('patchUsageRow: no row found for', usage.path);
-        }
-        return;
-    }
+    // Also try to patch the row if it exists
+    const row = findTreeRow(usage.path) as HTMLElement;
+    if (!row) return;
 
     const sizeEl = row.querySelector('.tree-size') as HTMLElement;
     const barEl = row.querySelector('.tree-size-bar') as HTMLElement;
