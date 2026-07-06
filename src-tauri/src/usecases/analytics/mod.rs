@@ -27,9 +27,9 @@ use std::time::Instant;
 pub struct AnalyticsUseCase {
     /// Shared state for tracking active scans (cancel flags).
     scans: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    /// Single arena per scan — folder tree stored as SoA with first-child/next-sibling.
-    /// Populated by disk_usage scan, queried by get_scan_tree_children.
-    tree: Arc<Mutex<HashMap<String, FolderArena>>>,
+    /// One arena per scan — folder tree stored as SoA with first-child/next-sibling.
+    /// Wrapped in Arc<Mutex<>> so the BFS thread writes and the frontend reads concurrently.
+    tree: Arc<Mutex<HashMap<String, Arc<Mutex<FolderArena>>>>>,
 }
 
 impl AnalyticsUseCase {
@@ -44,7 +44,8 @@ impl AnalyticsUseCase {
     /// Looks up by NodeId, resolves names from the arena string pool.
     pub fn get_children(&self, scan_id: &str, parent_id: NodeId) -> Option<Vec<ScanTreeChild>> {
         let t = self.tree.lock().unwrap();
-        let arena = t.get(scan_id)?;
+        let arena_arc = t.get(scan_id)?;
+        let arena = arena_arc.lock().unwrap();
         let mut children = Vec::new();
         for id in arena.children(parent_id) {
             children.push(ScanTreeChild {

@@ -50,7 +50,7 @@ impl DiskUsageUseCase {
         start: Instant,
         scan_id: String,
         // Persistent arena — the single store for the folder tree.
-        tree: Arc<Mutex<HashMap<String, FolderArena>>>,
+        tree: Arc<Mutex<HashMap<String, Arc<Mutex<FolderArena>>>>>,
     ) -> impl std::future::Future<Output = ()> {
         let (done_tx, done_rx) = oneshot::channel();
         let (tx, mut rx) = mpsc::unbounded_channel::<ScanStep>();
@@ -63,7 +63,7 @@ impl DiskUsageUseCase {
         tokio::task::spawn_blocking(move || {
             let base = Path::new(&path_walk);
 
-            // ─── Arena ───
+            // ─── Arena (wrapped in Arc<Mutex<>> for concurrent frontend queries) ───
 
             let mut arena = FolderArena::new();
             let root_name = base
@@ -73,6 +73,17 @@ impl DiskUsageUseCase {
             let root_path = normalize_path(base);
 
             let root_id = arena.alloc_folder(&root_name);
+
+            // Store arena in tree BEFORE BFS so the frontend can query children
+            // as they are discovered. Arc<Mutex<>> lets BFS write and frontend
+            // read concurrently without blocking each other.
+            let arena_arc = Arc::new(std::sync::Mutex::new(arena));
+            let arena_bfs = arena_arc.clone();
+
+            {
+                let mut tree = tree_blocking.lock().unwrap();
+                tree.insert(scan_id_blocking.clone(), arena_arc);
+            }
 
             // Path map: NodeId → normalized path string (for IPC emission)
             let mut path_map: std::collections::HashMap<NodeId, String> =
@@ -165,12 +176,14 @@ impl DiskUsageUseCase {
                         batch_leaves.push((current_id, current_path));
                     } else {
                         // Allocate children in arena, link to parent
+                        let mut arena = arena_bfs.lock().unwrap();
                         for (child_name, child_path) in children {
                             let child_id = arena.alloc_folder(&child_name);
                             arena.add_child(current_id, child_id);
                             path_map.insert(child_id, child_path.clone());
                             queue.push_back((child_id, child_path));
                         }
+                        // arena lock dropped here
 
                         // Track for thin event emission
                         batch_discovered.push((current_id, child_count as u32));
@@ -223,57 +236,54 @@ impl DiskUsageUseCase {
 
             // Simpler approach: since all sizing is done, do a bottom-up pass.
             // Process nodes in reverse BFS order (deepest first).
-            for idx in (0..arena.len()).rev() {
-                let id = NodeId(idx as u32);
-                let node_path = match path_map.get(&id) {
-                    Some(p) => p.clone(),
-                    None => continue,
-                };
+            {
+                let mut arena = arena_bfs.lock().unwrap();
+                for idx in (0..arena.len()).rev() {
+                    let id = NodeId(idx as u32);
+                    let node_path = match path_map.get(&id) {
+                        Some(p) => p.clone(),
+                        None => continue,
+                    };
 
-                // Check if this node has children
-                let children: Vec<NodeId> = arena.children(id).collect();
-                if children.is_empty() {
-                    // Leaf — size it now (sizing threads already emitted, but we need
-                    // the stats in the arena for rollup).
-                    // Size the folder if not already sized.
-                    if !arena.sized[idx] {
-                        let (size, file_count, folder_count) =
-                            size_folder_stats(Path::new(&node_path));
-                        arena.size[idx] = size;
-                        arena.file_count[idx] = file_count;
-                        arena.folder_count[idx] = folder_count;
-                        arena.sized[idx] = true;
+                    // Check if this node has children
+                    let children: Vec<NodeId> = arena.children(id).collect();
+                    if children.is_empty() {
+                        // Leaf — size it now (sizing threads already emitted, but we need
+                        // the stats in the arena for rollup).
+                        // Size the folder if not already sized.
+                        if !arena.sized[idx] {
+                            let (size, file_count, folder_count) =
+                                size_folder_stats(Path::new(&node_path));
+                            arena.size[idx] = size;
+                            arena.file_count[idx] = file_count;
+                            arena.folder_count[idx] = folder_count;
+                            arena.sized[idx] = true;
 
-                        let _ = tx.send(ScanStep::Folder(FolderUsage {
-                            node_id: id,
-                            size,
-                            file_count,
-                            folder_count,
-                        }));
-                    }
-                } else {
-                    // Internal node — roll up from children
-                    if arena.all_children_sized(id) {
-                        let (total_size, total_files, total_folders) = arena.sum_children(id);
-                        arena.size[idx] = total_size;
-                        arena.file_count[idx] = total_files;
-                        arena.folder_count[idx] = total_folders;
-                        arena.sized[idx] = true;
+                            let _ = tx.send(ScanStep::Folder(FolderUsage {
+                                node_id: id,
+                                size,
+                                file_count,
+                                folder_count,
+                            }));
+                        }
+                    } else {
+                        // Internal node — roll up from children
+                        if arena.all_children_sized(id) {
+                            let (total_size, total_files, total_folders) = arena.sum_children(id);
+                            arena.size[idx] = total_size;
+                            arena.file_count[idx] = total_files;
+                            arena.folder_count[idx] = total_folders;
+                            arena.sized[idx] = true;
 
-                        let _ = tx.send(ScanStep::Folder(FolderUsage {
-                            node_id: id,
-                            size: total_size,
-                            file_count: total_files,
-                            folder_count: total_folders,
-                        }));
+                            let _ = tx.send(ScanStep::Folder(FolderUsage {
+                                node_id: id,
+                                size: total_size,
+                                file_count: total_files,
+                                folder_count: total_folders,
+                            }));
+                        }
                     }
                 }
-            }
-
-            // Store arena in tree for get_children queries
-            {
-                let mut tree = tree_blocking.lock().unwrap();
-                tree.insert(scan_id_blocking.clone(), arena);
             }
 
             if cancel_blocking.load(Ordering::Relaxed) {
@@ -326,7 +336,7 @@ impl DiskUsageUseCase {
                         {
                             let tree = tree_for_emit.lock().unwrap();
                             let scan_arena = tree.get(&scan_id_clone);
-                            let tree_folders = scan_arena.map(|a| a.len()).unwrap_or(0);
+                            let tree_folders = scan_arena.and_then(|a| a.lock().ok().map(|g| g.len())).unwrap_or(0);
                             println!(
                                 "[BACKEND MEMORY] scan={} | arena_folders={} | sized_folders={} | total_files={} | total_size={}",
                                 scan_id_clone, tree_folders, folder_count, total_files, format_bytes(total_size),
