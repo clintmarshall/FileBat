@@ -136,10 +136,12 @@ function flushPendingEvents() {
     // Flush stats events (NodeId-based)
     const statsToFlush = pendingStats;
     pendingStats = [];
+    let maxChanged = false;
 
     for (const usage of statsToFlush) {
         if (usage.size > maxFolderSize) {
             maxFolderSize = usage.size;
+            maxChanged = true;
         }
         foldersSized += 1;
 
@@ -161,10 +163,23 @@ function flushPendingEvents() {
 
         if (sizeEl) sizeEl.textContent = formatSize(usage.size);
         if (barEl) {
+            barEl.dataset.size = String(usage.size);
             barEl.style.width = `${Math.max(0, (usage.size / (maxFolderSize || 1)) * 100)}%`;
         }
         if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
         if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
+    }
+
+    // If maxFolderSize grew, recalculate all visible bars so they scale correctly
+    if (maxChanged) {
+        const allBars = document.querySelectorAll('.tree-size-bar');
+        for (let i = 0; i < allBars.length; i++) {
+            const bar = allBars[i] as HTMLElement;
+            const size = parseFloat(bar.dataset.size || '0');
+            if (size > 0) {
+                bar.style.width = `${Math.max(0, (size / (maxFolderSize || 1)) * 100)}%`;
+            }
+        }
     }
 
     // Flush progress
@@ -1082,12 +1097,12 @@ function setupScanListeners() {
         scheduleFlush();
 
         // If the parent is expanded and children aren't loaded yet, fetch them
+        // Auto-expand so more rows exist for incoming stats to land on.
         const node = treeStore.get(data.parentId);
         if (expandedPaths.has(data.parentId) && (!node || !node.children)) {
-            // Find depth from the existing row
             const row = document.querySelector(`.usage-tree-row[data-node-id="${data.parentId}"]`);
             const depth = getDepthFromRow(row);
-            fetchAndRenderChildren(data.parentId, depth);
+            fetchAndRenderChildren(data.parentId, depth, true);
         }
     }).catch(err => console.error('Failed to register scan:children_ready listener:', err));
 
@@ -1262,6 +1277,7 @@ function renderTreeRow(nodeId: number, depth: number): HTMLElement {
     const bar = document.createElement('span');
     bar.className = 'tree-size-bar';
     if (stats) {
+        bar.dataset.size = String(stats.size);
         bar.style.width = `${Math.max(0, (stats.size / (maxFolderSize || 1)) * 100)}%`;
     } else {
         bar.style.width = '0%';
@@ -1355,8 +1371,9 @@ function getDepthFromRow(row: HTMLElement | null): number {
 }
 
 /// Fetch children from backend and render them into the DOM.
-/// Used by handleTreeExpand (user click) and children_ready handler (auto-expand).
-async function fetchAndRenderChildren(parentId: number, depth: number) {
+/// If autoExpand is true (called during scan), also expand each child one level deeper
+/// so more rows exist for incoming stats to land on.
+async function fetchAndRenderChildren(parentId: number, depth: number, autoExpand = false) {
     if (!activeScanId) return;
 
     try {
@@ -1365,6 +1382,8 @@ async function fetchAndRenderChildren(parentId: number, depth: number) {
                 scanId: activeScanId,
                 parentId,
             });
+
+        if (children.length === 0) return;
 
         // Store path info for each child
         for (const child of children) {
@@ -1391,6 +1410,14 @@ async function fetchAndRenderChildren(parentId: number, depth: number) {
         // Render each child
         for (const child of children) {
             childrenContainer.appendChild(renderTreeRow(child.id, depth + 1));
+        }
+
+        // Auto-expand one more level during scan so stats have rows to land on
+        if (autoExpand && depth < 2) {
+            for (const child of children) {
+                expandedPaths.add(child.id);
+                fetchAndRenderChildren(child.id, depth + 1, true);
+            }
         }
     } catch (err) {
         console.error('Failed to load children:', err);

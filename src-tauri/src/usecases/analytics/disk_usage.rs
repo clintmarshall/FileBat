@@ -101,12 +101,14 @@ impl DiskUsageUseCase {
 
             let tx_clone = tx.clone();
             let cancel_size = cancel_blocking.clone();
+            let arena_size = arena_bfs.clone();
 
             let mut sizing_handles = Vec::new();
             for _ in 0..10 {
                 let rx = work_rx.clone();
                 let tx_t = tx_clone.clone();
                 let cancel_t = cancel_size.clone();
+                let arena_s = arena_size.clone();
 
                 let handle = std::thread::spawn(move || {
                     loop {
@@ -128,13 +130,49 @@ impl DiskUsageUseCase {
 
                         let (size, file_count, folder_count) = size_folder_stats(Path::new(&folder_path));
 
-                        // Emit to frontend
-                        let _ = tx_t.send(ScanStep::Folder(FolderUsage {
-                            node_id,
-                            size,
-                            file_count,
-                            folder_count,
-                        }));
+                        // Write stats to arena and do parent-pointer rollup
+                        {
+                            let mut arena = arena_s.lock().unwrap();
+                            let idx = node_id.0 as usize;
+
+                            // Write leaf stats
+                            arena.size[idx] = size;
+                            arena.file_count[idx] = file_count;
+                            arena.folder_count[idx] = folder_count;
+                            arena.sized[idx] = true;
+
+                            // Emit leaf stats
+                            let _ = tx_t.send(ScanStep::Folder(FolderUsage {
+                                node_id,
+                                size,
+                                file_count,
+                                folder_count,
+                            }));
+
+                            // Walk parent chain — roll up parents whose children are all sized
+                            let mut current = arena.parent[idx];
+                            while let Some(parent_id) = current {
+                                let p = parent_id.0 as usize;
+                                if arena.all_children_sized(parent_id) {
+                                    let (s, f, d) = arena.sum_children(parent_id);
+                                    arena.size[p] = s;
+                                    arena.file_count[p] = f;
+                                    arena.folder_count[p] = d;
+                                    arena.sized[p] = true;
+
+                                    let _ = tx_t.send(ScanStep::Folder(FolderUsage {
+                                        node_id: parent_id,
+                                        size: s,
+                                        file_count: f,
+                                        folder_count: d,
+                                    }));
+
+                                    current = arena.parent[p];
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
                     }
                 });
 
@@ -221,51 +259,41 @@ impl DiskUsageUseCase {
                 let _ = handle.join();
             }
 
-            // ─── Rollup via Parent Pointer Walk ───
-            // After all sizing is done, walk the arena bottom-up.
-            // Each sized node tries to roll up its parent.
-
-            // We need to do this in the arena. Since sizing threads emitted FolderUsage
-            // but didn't write to the arena, we need a separate rollup pass.
-            // Re-collect stats from emitted FolderUsage events... but we don't have them
-            // stored. Instead, write stats into the arena during sizing.
-
-            // Actually: the sizing threads emit FolderUsage but don't write to the arena.
-            // For rollup, we need the stats in the arena. Let's do a final pass:
-            // walk all nodes, check if they have children, and roll up.
-
-            // Simpler approach: since all sizing is done, do a bottom-up pass.
-            // Process nodes in reverse BFS order (deepest first).
+            // ─── Final Rollup Pass ───
+            // Sizing threads do parent-pointer rollup as they complete, so most nodes
+            // are already sized. This pass catches any remaining unsized nodes
+            // (e.g., leaves that weren't queued or parents whose siblings finished late).
             {
                 let mut arena = arena_bfs.lock().unwrap();
                 for idx in (0..arena.len()).rev() {
                     let id = NodeId(idx as u32);
+
+                    // Skip if already sized during the scan
+                    if arena.sized[idx] {
+                        continue;
+                    }
+
                     let node_path = match path_map.get(&id) {
                         Some(p) => p.clone(),
                         None => continue,
                     };
 
-                    // Check if this node has children
                     let children: Vec<NodeId> = arena.children(id).collect();
                     if children.is_empty() {
-                        // Leaf — size it now (sizing threads already emitted, but we need
-                        // the stats in the arena for rollup).
-                        // Size the folder if not already sized.
-                        if !arena.sized[idx] {
-                            let (size, file_count, folder_count) =
-                                size_folder_stats(Path::new(&node_path));
-                            arena.size[idx] = size;
-                            arena.file_count[idx] = file_count;
-                            arena.folder_count[idx] = folder_count;
-                            arena.sized[idx] = true;
+                        // Leaf — size it now
+                        let (size, file_count, folder_count) =
+                            size_folder_stats(Path::new(&node_path));
+                        arena.size[idx] = size;
+                        arena.file_count[idx] = file_count;
+                        arena.folder_count[idx] = folder_count;
+                        arena.sized[idx] = true;
 
-                            let _ = tx.send(ScanStep::Folder(FolderUsage {
-                                node_id: id,
-                                size,
-                                file_count,
-                                folder_count,
-                            }));
-                        }
+                        let _ = tx.send(ScanStep::Folder(FolderUsage {
+                            node_id: id,
+                            size,
+                            file_count,
+                            folder_count,
+                        }));
                     } else {
                         // Internal node — roll up from children
                         if arena.all_children_sized(id) {
