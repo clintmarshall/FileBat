@@ -91,6 +91,7 @@ impl AnalyticsUseCase {
 
     /// Scan a directory tree for disk usage.
     ///
+    /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
     pub async fn scan_usage(
         &self,
@@ -108,21 +109,25 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
+        let scans = self.scans.clone();
+        let tree = self.tree.clone();
 
-        // run() returns a future that resolves when the scan + emission is fully done
-        disk_usage::DiskUsageUseCase::run(
-            window,
-            path,
-            max_depth,
-            cancel_clone,
-            start,
-            id_run.clone(),
-            self.tree.clone(),
-        )
-        .await;
-
-        // Unregister after the scan is done (completed or cancelled)
-        self.scans.lock().unwrap().remove(&id_unregister);
+        // Spawn as background task — return scan_id immediately so the frontend
+        // can process events as they arrive. The invoke() won't block the UI.
+        tokio::spawn(async move {
+            disk_usage::DiskUsageUseCase::run(
+                window,
+                path,
+                max_depth,
+                cancel_clone,
+                start,
+                id_run,
+                tree,
+            )
+            .await;
+            // Clean up cancel flag when scan finishes (completed or cancelled)
+            scans.lock().unwrap().remove(&id_unregister);
+        });
 
         Ok(id)
     }
@@ -133,6 +138,7 @@ impl AnalyticsUseCase {
 
     /// Find large files in a directory tree.
     ///
+    /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
     pub async fn find_large_files(
         &self,
@@ -151,13 +157,15 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
+        let scans = self.scans.clone();
 
-        large_files::LargeFilesUseCase::run(
-            window, path, min_size, max_results, cancel_clone, start, id_run,
-        )
-        .await;
-
-        self.scans.lock().unwrap().remove(&id_unregister);
+        tokio::spawn(async move {
+            large_files::LargeFilesUseCase::run(
+                window, path, min_size, max_results, cancel_clone, start, id_run,
+            )
+            .await;
+            scans.lock().unwrap().remove(&id_unregister);
+        });
 
         Ok(id)
     }
@@ -168,6 +176,7 @@ impl AnalyticsUseCase {
 
     /// Find duplicate files using the 3-stage funnel.
     ///
+    /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
     pub async fn find_duplicates(
         &self,
@@ -184,10 +193,12 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
+        let scans = self.scans.clone();
 
-        duplicates::DuplicatesUseCase::run(window, path, cancel_clone, start, id_run).await;
-
-        self.scans.lock().unwrap().remove(&id_unregister);
+        tokio::spawn(async move {
+            duplicates::DuplicatesUseCase::run(window, path, cancel_clone, start, id_run).await;
+            scans.lock().unwrap().remove(&id_unregister);
+        });
 
         Ok(id)
     }
