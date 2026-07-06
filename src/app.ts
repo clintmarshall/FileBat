@@ -136,12 +136,10 @@ function flushPendingEvents() {
     // Flush stats events (NodeId-based)
     const statsToFlush = pendingStats;
     pendingStats = [];
-    let maxChanged = false;
 
     for (const usage of statsToFlush) {
         if (usage.size > maxFolderSize) {
             maxFolderSize = usage.size;
-            maxChanged = true;
         }
         foldersSized += 1;
 
@@ -164,22 +162,19 @@ function flushPendingEvents() {
         if (sizeEl) sizeEl.textContent = formatSize(usage.size);
         if (barEl) {
             barEl.dataset.size = String(usage.size);
-            barEl.style.width = `${Math.max(0, (usage.size / (maxFolderSize || 1)) * 100)}%`;
+            // Find parent size from the children container that holds this row
+            const parentContainer = row.parentElement?.parentElement as HTMLElement | null;
+            const parentSize = parentContainer?.dataset.parentSize
+                ? parseFloat(parentContainer.dataset.parentSize)
+                : undefined;
+            // Root (no parent) = 100%, children = percentage of parent
+            const pct = parentSize !== undefined && parentSize > 0
+                ? (usage.size / parentSize) * 100
+                : 100;
+            barEl.style.width = `${Math.min(100, Math.max(0, pct))}%`;
         }
         if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
         if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
-    }
-
-    // If maxFolderSize grew, recalculate all visible bars so they scale correctly
-    if (maxChanged) {
-        const allBars = document.querySelectorAll('.tree-size-bar');
-        for (let i = 0; i < allBars.length; i++) {
-            const bar = allBars[i] as HTMLElement;
-            const size = parseFloat(bar.dataset.size || '0');
-            if (size > 0) {
-                bar.style.width = `${Math.max(0, (size / (maxFolderSize || 1)) * 100)}%`;
-            }
-        }
     }
 
     // Flush progress
@@ -1235,7 +1230,8 @@ function renderTreeRoot(rootId: number, rootPath: string, rootName: string) {
 }
 
 /// Render a single tree row by NodeId. Toggle is disabled until children are discovered.
-function renderTreeRow(nodeId: number, depth: number): HTMLElement {
+/// parentSize: if provided, the size bar shows percentage of parent (root = 100%).
+function renderTreeRow(nodeId: number, depth: number, parentSize?: number): HTMLElement {
     const node = treeStore.get(nodeId);
     const hasChildren = node?.childCount !== undefined && node.childCount > 0;
     const isExpanded = expandedPaths.has(nodeId);
@@ -1276,9 +1272,11 @@ function renderTreeRow(nodeId: number, depth: number): HTMLElement {
 
     const bar = document.createElement('span');
     bar.className = 'tree-size-bar';
-    if (stats) {
+    if (stats && stats.size > 0) {
         bar.dataset.size = String(stats.size);
-        bar.style.width = `${Math.max(0, (stats.size / (maxFolderSize || 1)) * 100)}%`;
+        // Root (no parent) = 100%, children = percentage of parent
+        const pct = parentSize !== undefined ? (stats.size / parentSize) * 100 : 100;
+        bar.style.width = `${Math.min(100, Math.max(0, pct))}%`;
     } else {
         bar.style.width = '0%';
     }
@@ -1308,14 +1306,17 @@ function renderTreeRow(nodeId: number, depth: number): HTMLElement {
     // Click handler — expand/collapse or fetch children
     row.addEventListener('click', () => handleTreeExpand(nodeId, row, depth));
 
-    // Children container
+    // Children container — store parent size for bar calculations
     const childrenContainer = document.createElement('div');
     childrenContainer.className = 'usage-tree-children' + (isExpanded ? ' expanded' : '');
+    if (stats?.size) {
+        childrenContainer.dataset.parentSize = String(stats.size);
+    }
 
     // If already expanded and children loaded, render them
     if (isExpanded && node?.children) {
         for (const child of node.children) {
-            childrenContainer.appendChild(renderTreeRow(child.id, depth + 1));
+            childrenContainer.appendChild(renderTreeRow(child.id, depth + 1, stats?.size));
         }
     }
 
@@ -1350,8 +1351,9 @@ async function handleTreeExpand(nodeId: number, row: HTMLElement, depth: number)
 
         // If children already loaded, render them
         if (childrenContainer && node.children && childrenContainer.children.length === 0) {
+            const parentSize = node.stats?.size;
             for (const child of node.children) {
-                childrenContainer.appendChild(renderTreeRow(child.id, depth + 1));
+                childrenContainer.appendChild(renderTreeRow(child.id, depth + 1, parentSize));
             }
         }
 
@@ -1407,9 +1409,15 @@ async function fetchAndRenderChildren(parentId: number, depth: number, autoExpan
         const childrenContainer = row.nextElementSibling as HTMLElement | null;
         if (!childrenContainer) return;
 
-        // Render each child
+        // Store parent size for bar calculations
+        const parentSize = existing?.stats?.size;
+        if (parentSize) {
+            childrenContainer.dataset.parentSize = String(parentSize);
+        }
+
+        // Render each child with parent size for bar calculation
         for (const child of children) {
-            childrenContainer.appendChild(renderTreeRow(child.id, depth + 1));
+            childrenContainer.appendChild(renderTreeRow(child.id, depth + 1, parentSize));
         }
 
         // Auto-expand one more level during scan so stats have rows to land on
