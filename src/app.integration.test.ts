@@ -125,7 +125,15 @@ describe('Analytics — Disk Usage Scan', () => {
   });
 
   it('scan:chunk events render usage results', async () => {
-    await bootWithScan();
+    await bootApp((cmd) => {
+      if (cmd === 'get_volumes') return [{ name: 'C:', path: 'C:\\' }];
+      if (cmd === 'start_scan_usage') return 'scan-123';
+      if (cmd === 'get_scan_tree_children') return [
+        { id: 1, name: 'Windows', path: 'C:/Windows' },
+        { id: 2, name: 'Users', path: 'C:/Users' },
+      ];
+      return [];
+    });
 
     document.getElementById('btn-analytics')!.click();
     await flushPromises();
@@ -135,40 +143,41 @@ describe('Analytics — Disk Usage Scan', () => {
     // Tree started — renders root row
     emitEvent('scan:tree_started', {
       scanId: 'test_scan',
+      rootId: 0,
       rootPath: 'C:/',
       rootName: 'C:/',
     });
     await flushPromises();
 
-    // Children ready — enables expand and stores children
+    // Children ready — thin event: just enables toggle
     emitEvent('scan:children_ready', {
       scanId: 'test_scan',
-      parentPath: 'C:/',
-      children: [
-        { path: 'C:/Windows', name: 'Windows' },
-        { path: 'C:/Users', name: 'Users' },
-      ],
+      parentId: 0,
+      childCount: 2,
     });
     await flushRaf();
 
     const results = document.getElementById('usage-results')!;
     expect(results.innerHTML).toContain('usage-tree-header');
 
-    // Expand root to render children
-    const rootRow = results.querySelector('.usage-tree-row[data-path="C:/"]')!;
-    rootRow.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    // Root is auto-expanded. Click to collapse, then click again to expand
+    // (triggers get_scan_tree_children invoke to pull children)
+    const rootRow = results.querySelector('.usage-tree-row[data-node-id="0"]')!;
+    rootRow.dispatchEvent(new MouseEvent('click', { bubbles: true })); // collapse
+    await flushPromises();
+    rootRow.dispatchEvent(new MouseEvent('click', { bubbles: true })); // expand → fetch children
     await flushPromises();
 
     // Children should now be rendered
     expect(results.innerHTML).toContain('Windows');
     expect(results.innerHTML).toContain('Users');
 
-    // Phase 2: emit chunk to patch the row
+    // Phase 2: emit chunk to patch the row (NodeId-based)
     emitEvent('scan:chunk', {
       scanId: 'test_scan',
       data: {
         type: 'folder_usage',
-        usage: { path: 'C:/Windows', size: 5368709120, fileCount: 12345, folderCount: 890 },
+        usage: { nodeId: 1, size: 5368709120, fileCount: 12345, folderCount: 890 },
       },
     });
     await flushRaf();

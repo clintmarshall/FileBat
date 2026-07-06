@@ -1,12 +1,14 @@
+mod arena;
 mod aggregator;
 mod disk_usage;
 mod duplicates;
 mod large_files;
 mod snapshot;
 
+use arena::FolderArena;
 use snapshot::SnapshotUseCase;
 
-use crate::domain::{AppError, ScanTreeChild, UsageSnapshot};
+use crate::domain::{AppError, NodeId, ScanTreeChild, UsageSnapshot};
 use crate::infrastructure::SqliteAnalytics;
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,10 +27,9 @@ use std::time::Instant;
 pub struct AnalyticsUseCase {
     /// Shared state for tracking active scans (cancel flags).
     scans: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    /// Single tree store — parent_path → list of children per scan.
+    /// Single arena per scan — folder tree stored as SoA with first-child/next-sibling.
     /// Populated by disk_usage scan, queried by get_scan_tree_children.
-    /// Replaces the old tree_state + parent_children duplication.
-    tree: Arc<Mutex<HashMap<String, HashMap<String, Vec<ScanTreeChild>>>>>,
+    tree: Arc<Mutex<HashMap<String, FolderArena>>>,
 }
 
 impl AnalyticsUseCase {
@@ -40,11 +41,20 @@ impl AnalyticsUseCase {
     }
 
     /// Get children for a folder in the tree.
-    pub fn get_children(&self, scan_id: &str, parent_path: &str) -> Option<Vec<ScanTreeChild>> {
+    /// Looks up by NodeId, resolves names from the arena string pool.
+    pub fn get_children(&self, scan_id: &str, parent_id: NodeId) -> Option<Vec<ScanTreeChild>> {
         let t = self.tree.lock().unwrap();
-        t.get(scan_id)?
-            .get(parent_path)
-            .cloned()
+        let arena = t.get(scan_id)?;
+        let mut children = Vec::new();
+        for id in arena.children(parent_id) {
+            children.push(ScanTreeChild {
+                id,
+                name: arena.name(id).to_string(),
+            });
+        }
+        // Sort by name for consistent rendering
+        children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Some(children)
     }
 
     /// Generate a unique scan id.
@@ -98,12 +108,6 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
-
-        // Initialize tree for this scan
-        {
-            let mut t = self.tree.lock().unwrap();
-            t.entry(id_run.clone()).or_insert_with(HashMap::new);
-        }
 
         // run() returns a future that resolves when the scan + emission is fully done
         disk_usage::DiskUsageUseCase::run(

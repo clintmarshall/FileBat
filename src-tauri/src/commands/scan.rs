@@ -1,4 +1,4 @@
-use crate::domain::{AppError, UsageSnapshot};
+use crate::domain::{AppError, NodeId, ScanTreeChild, UsageSnapshot};
 use crate::infrastructure::SqliteAnalytics;
 use crate::usecases::AnalyticsUseCase;
 use std::sync::Arc;
@@ -36,10 +36,10 @@ pub async fn start_scan_usage(
 #[tauri::command]
 pub fn get_scan_tree_children(
     scan_id: String,
-    parent_path: String,
+    parent_id: u32,
     analytics: tauri::State<'_, AnalyticsState>,
-) -> Vec<crate::domain::ScanTreeChild> {
-    analytics.get_children(&scan_id, &parent_path).unwrap_or_default()
+) -> Vec<ScanTreeChild> {
+    analytics.get_children(&scan_id, NodeId(parent_id)).unwrap_or_default()
 }
 
 // ─── Large Files ───

@@ -58,21 +58,32 @@ pub fn sort_entries(entries: &mut [Entry]) {
 
 // ─── Analytics Models ───
 
+/// Zero-overhead ID — index into the FolderArena Vec.
+/// Copy semantics: passes by value, no ref-count overhead in hot paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NodeId(pub u32);
+
+/// Index into the shared string pool (deduplicated folder names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NameId(pub u32);
+
 /// Result of scanning a single folder for disk usage.
+/// NodeId replaces path — the arena holds the path once, stats are inline.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderUsage {
-    pub path: String,
+    pub node_id: NodeId,
     pub size: u64,
     pub file_count: u64,
     pub folder_count: u64,
 }
 
 /// A single child folder in a tree children response.
+/// Only carries id + name — path is resolved from the arena or lazily in the frontend.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanTreeChild {
-    pub path: String,
+    pub id: NodeId,
     pub name: String,
 }
 
@@ -82,18 +93,19 @@ pub struct ScanTreeChild {
 #[serde(rename_all = "camelCase")]
 pub struct ScanTreeStarted {
     pub scan_id: String,
+    pub root_id: NodeId,
     pub root_path: String,
     pub root_name: String,
 }
 
-/// Emitted when children for a folder have been discovered.
-/// Frontend enables the expand button and stores the children count.
+/// Thin event emitted when children for a folder have been discovered.
+/// Only carries id + count — frontend enables the toggle, pulls children on expand.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanTreeChildren {
     pub scan_id: String,
-    pub parent_path: String,
-    pub children: Vec<ScanTreeChild>,
+    pub parent_id: NodeId,
+    pub child_count: u32,
 }
 
 /// A group of files confirmed to be identical.
@@ -253,13 +265,13 @@ mod tests {
     #[test]
     fn folder_usage_serializes() {
         let usage = FolderUsage {
-            path: "/test".into(),
+            node_id: NodeId(42),
             size: 1024,
             file_count: 5,
             folder_count: 2,
         };
         let json = serde_json::to_string(&usage).unwrap();
-        assert!(json.contains("\"path\":\"/test\""));
+        assert!(json.contains("\"nodeId\":42"));
         assert!(json.contains("\"size\":1024"));
         assert!(json.contains("\"fileCount\":5"));
         assert!(json.contains("\"folderCount\":2"));
@@ -269,7 +281,7 @@ mod tests {
     fn scan_chunk_data_serializes_with_tag() {
         let data = ScanChunkData::FolderUsage {
             usage: FolderUsage {
-                path: "/test".into(),
+                node_id: NodeId(1),
                 size: 100,
                 file_count: 1,
                 folder_count: 0,
@@ -277,5 +289,6 @@ mod tests {
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"type\":\"folder_usage\""));
+        assert!(json.contains("\"nodeId\":1"));
     }
 }

@@ -524,7 +524,7 @@ html, body {
 
 .usage-tree-header {
     display: grid;
-    grid-template-columns: 1fr 70px 60px 50px 50px;
+    grid-template-columns: 1fr 70px minmax(80px, 1fr) 50px 50px;
     align-items: center;
     height: 26px;
     padding: 0 8px;
@@ -552,7 +552,7 @@ html, body {
 
 .usage-tree-row {
     display: grid;
-    grid-template-columns: 1fr 70px 60px 50px 50px;
+    grid-template-columns: 1fr 70px minmax(80px, 1fr) 50px 50px;
     align-items: center;
     height: 24px;
     padding: 0 8px;
@@ -616,7 +616,7 @@ html, body {
 }
 
 .tree-size-bar {
-    display: inline-block;
+    display: block;
     height: 6px;
     background: var(--accent);
     border-radius: 2px;
