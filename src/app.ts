@@ -1068,6 +1068,10 @@ function setupScanListeners() {
         // Store root path info for resolution
         pathMap.set(info.rootId, { path: info.rootPath, name: info.rootName });
         treeStore.set(info.rootId, { childCount: 0 });
+
+        // Set activeScanId so children_ready can pull children
+        activeScanId = info.scanId;
+
         renderTreeRoot(info.rootId, info.rootPath, info.rootName);
     }).catch(err => console.error('Failed to register scan:tree_started listener:', err));
 
@@ -1076,6 +1080,15 @@ function setupScanListeners() {
         const data = event.payload as { scanId: string; parentId: number; childCount: number };
         pendingChildren.push({ parentId: data.parentId, childCount: data.childCount });
         scheduleFlush();
+
+        // If the parent is expanded and children aren't loaded yet, fetch them
+        const node = treeStore.get(data.parentId);
+        if (expandedPaths.has(data.parentId) && (!node || !node.children)) {
+            // Find depth from the existing row
+            const row = document.querySelector(`.usage-tree-row[data-node-id="${data.parentId}"]`);
+            const depth = getDepthFromRow(row);
+            fetchAndRenderChildren(data.parentId, depth);
+        }
     }).catch(err => console.error('Failed to register scan:children_ready listener:', err));
 
     // Progress — buffer for batched DOM update
@@ -1230,10 +1243,11 @@ function renderTreeRow(nodeId: number, depth: number): HTMLElement {
     toggle.className = 'tree-toggle' + (isExpanded ? ' expanded' : '') + (!hasChildren ? ' disabled' : '');
     toggle.textContent = hasChildren ? '▶' : '';
 
-    // Icon
+    // Icon — disk for drive roots, folder for everything else
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
-    icon.textContent = '📁';
+    const isDrive = pathInfo && /^[A-Za-z]:$/.test(pathInfo.path.replace(/\/$/, ''));
+    icon.textContent = isDrive ? '💾' : '📁';
 
     // Name
     const name = document.createElement('span');
@@ -1327,35 +1341,59 @@ async function handleTreeExpand(nodeId: number, row: HTMLElement, depth: number)
 
         // If children not loaded yet, pull from backend
         if (childrenContainer && !node.children && node.childCount > 0 && activeScanId) {
-            try {
-                const children: Array<{ id: number; name: string; path?: string }> =
-                    await invoke('get_scan_tree_children', {
-                        scanId: activeScanId,
-                        parentId: nodeId,
-                    });
-
-                // Store path info for each child (name always available, path optional)
-                for (const child of children) {
-                    pathMap.set(child.id, {
-                        path: child.path ?? `node_${child.id}`,
-                        name: child.name,
-                    });
-                }
-
-                const existing = treeStore.get(nodeId);
-                treeStore.set(nodeId, {
-                    childCount: existing?.childCount ?? children.length,
-                    children,
-                    stats: existing?.stats,
-                });
-
-                for (const child of children) {
-                    childrenContainer.appendChild(renderTreeRow(child.id, depth + 1));
-                }
-            } catch (err) {
-                console.error('Failed to load children:', err);
-            }
+            await fetchAndRenderChildren(nodeId, depth);
         }
+    }
+}
+
+/// Get the depth of a tree row from its indent element.
+function getDepthFromRow(row: HTMLElement | null): number {
+    if (!row) return 0;
+    const nameCell = row.querySelector('.tree-name-cell') as HTMLElement;
+    const indent = nameCell?.querySelector('.tree-indent') as HTMLElement;
+    return indent ? parseInt(indent.style.width.replace('px', '')) / 16 : 0;
+}
+
+/// Fetch children from backend and render them into the DOM.
+/// Used by handleTreeExpand (user click) and children_ready handler (auto-expand).
+async function fetchAndRenderChildren(parentId: number, depth: number) {
+    if (!activeScanId) return;
+
+    try {
+        const children: Array<{ id: number; name: string; path?: string }> =
+            await invoke('get_scan_tree_children', {
+                scanId: activeScanId,
+                parentId,
+            });
+
+        // Store path info for each child
+        for (const child of children) {
+            pathMap.set(child.id, {
+                path: child.path ?? `node_${child.id}`,
+                name: child.name,
+            });
+        }
+
+        // Store children in tree store
+        const existing = treeStore.get(parentId);
+        treeStore.set(parentId, {
+            childCount: existing?.childCount ?? children.length,
+            children,
+            stats: existing?.stats,
+        });
+
+        // Find the children container in the DOM
+        const row = document.querySelector(`.usage-tree-row[data-node-id="${parentId}"]`) as HTMLElement | null;
+        if (!row) return;
+        const childrenContainer = row.nextElementSibling as HTMLElement | null;
+        if (!childrenContainer) return;
+
+        // Render each child
+        for (const child of children) {
+            childrenContainer.appendChild(renderTreeRow(child.id, depth + 1));
+        }
+    } catch (err) {
+        console.error('Failed to load children:', err);
     }
 }
 
