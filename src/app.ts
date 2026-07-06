@@ -167,11 +167,34 @@ function flushPendingEvents() {
             const parentSize = parentContainer?.dataset.parentSize
                 ? parseFloat(parentContainer.dataset.parentSize)
                 : undefined;
-            // Root (no parent) = 100%, children = percentage of parent
+            // Root (depth 0) = 100%, children = percentage of parent, unknown = 0%
+            const nameCell = row.querySelector('.tree-name-cell') as HTMLElement;
+            const indent = nameCell?.querySelector('.tree-indent') as HTMLElement;
+            const rowDepth = indent ? parseInt(indent.style.width.replace('px', '')) / 16 : 0;
             const pct = parentSize !== undefined && parentSize > 0
                 ? (usage.size / parentSize) * 100
-                : 100;
+                : (rowDepth === 0 ? 100 : 0);
             barEl.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+        }
+
+        // If this is a parent folder, update its children container's parentSize
+        // so children bars can be recalculated
+        const childrenContainer = row.nextElementSibling as HTMLElement | null;
+        if (childrenContainer && usage.size > 0) {
+            childrenContainer.dataset.parentSize = String(usage.size);
+            // Recalculate all children bars now that we know the parent size
+            const childRows = childrenContainer.querySelectorAll('.usage-tree-row');
+            for (let i = 0; i < childRows.length; i++) {
+                const childRow = childRows[i] as HTMLElement;
+                const childBar = childRow.querySelector('.tree-size-bar') as HTMLElement | null;
+                if (childBar) {
+                    const childSize = parseFloat(childBar.dataset.size || '0');
+                    if (childSize > 0) {
+                        const childPct = (childSize / usage.size) * 100;
+                        childBar.style.width = `${Math.min(100, Math.max(0, childPct))}%`;
+                    }
+                }
+            }
         }
         if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
         if (foldersEl) foldersEl.textContent = usage.folderCount.toLocaleString();
@@ -1274,8 +1297,10 @@ function renderTreeRow(nodeId: number, depth: number, parentSize?: number): HTML
     bar.className = 'tree-size-bar';
     if (stats && stats.size > 0) {
         bar.dataset.size = String(stats.size);
-        // Root (no parent) = 100%, children = percentage of parent
-        const pct = parentSize !== undefined ? (stats.size / parentSize) * 100 : 100;
+        // Root (depth 0) = 100%, children = percentage of parent, unknown parent = 0%
+        const pct = parentSize !== undefined && parentSize > 0
+            ? (stats.size / parentSize) * 100
+            : (depth === 0 ? 100 : 0);
         bar.style.width = `${Math.min(100, Math.max(0, pct))}%`;
     } else {
         bar.style.width = '0%';
