@@ -31,6 +31,23 @@ print(f'Launched PID: {p.pid}')
 
 **DO NOT run the E2E script** for interactive verification — use the Chrome DevTools MCP directly. The E2E script is for automated verification and kills the app on teardown.
 
+## Kill the App (CRITICAL — DO THIS WHEN FROZEN)
+
+When the app freezes or before `cargo build` to release the binary lock:
+
+```bash
+# Method 1: Escape slashes for Git Bash (preferred)
+taskkill //F //IM filebitch.exe
+
+# Method 2: Wrap in cmd /c
+cmd /c taskkill /F /IM filebitch.exe
+```
+
+**Why `//` in Git Bash?** Git Bash interprets single `/FLAG` as a relative path. Double `//` escapes to a single `/` for the Windows command.
+
+**DO NOT** try to close via Chrome DevTools MCP — the close button is outside the WebView.
+**DO NOT** try `window.__TAURI__.window.getCurrentWindow().close()` — won't work if frozen.
+
 ## Automated Verification
 
 ```bash
