@@ -1,12 +1,31 @@
 # SDLC — FileBitch Development Workflow
 
+## Launch the App (with CDP)
+
+From the Bash tool (Git Bash), use Python to set the env var correctly:
+
+```bash
+uv run python -c "
+import subprocess, os, time
+env = os.environ.copy()
+env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--remote-debugging-port=9222 --disable-http-cache --disable-cache'
+try: subprocess.run(['taskkill', '/F', '/IM', 'filebitch.exe'], capture_output=True)
+except: pass
+time.sleep(1)
+p = subprocess.Popen(['E:/projects/filebitch/target/debug/filebitch.exe'], env=env, creationflags=subprocess.DETACHED_PROCESS)
+print(f'Launched PID: {p.pid}')
+"
+```
+
+**Why Python?** `cmd /c set VAR=val && exe` doesn't propagate env vars to child processes reliably. Node.js `spawn` (used in E2E) works but requires the E2E script. Python `subprocess.Popen` with explicit `env=` is the most reliable from the Bash tool.
+
 ## Quick Iterate Loop (Day-to-Day)
 
-1. App is running with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`
+1. Launch the app (see above)
 2. `chrome-devtools__list_pages` → find the FileBitch page
 3. `chrome-devtools__take_snapshot` → full DOM with uids
 4. Interact: `click`, `fill`, `screenshot`, `evaluate_script`
-5. Make a code change → `tauri dev` hot-reloads → take another snapshot to verify
+5. Make a code change → rebuild with `cargo build` → relaunch → take another snapshot to verify
 
 **DO NOT kill the app before connecting.** The Chrome DevTools MCP connects to the already-running app.
 

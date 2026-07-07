@@ -55,6 +55,31 @@ Launches the compiled `filebitch.exe` with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENT
 
 **Prerequisite:** `cargo build` must have run first (binary at `target/debug/filebitch.exe`).
 
+## Interactive App Launch (CRITICAL — DO NOT SKIP)
+
+To interact with the running app via Chrome DevTools MCP, launch with CDP port:
+
+```bash
+uv run python -c "
+import subprocess, os, time
+env = os.environ.copy()
+env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--remote-debugging-port=9222 --disable-http-cache --disable-cache'
+try: subprocess.run(['taskkill', '/F', '/IM', 'filebitch.exe'], capture_output=True)
+except: pass
+time.sleep(1)
+p = subprocess.Popen(['E:/projects/filebitch/target/debug/filebitch.exe'], env=env, creationflags=subprocess.DETACHED_PROCESS)
+print(f'Launched PID: {p.pid}')
+"
+```
+
+**Why Python?** `cmd /c set VAR=val && exe` does NOT propagate env vars to child processes. Only Python `subprocess.Popen` with explicit `env=` works reliably from the Bash tool.
+
+**After launch:** wait ~5 seconds, then `chrome-devtools__list_pages` → `take_snapshot` → interact.
+
+**NEVER** use `npx tauri dev` to launch for interactive work — it does NOT set the CDP port.
+**NEVER** use `cmd /c start` with `set` — env vars don't propagate.
+**NEVER** kill the app before connecting — connect to what's already running.
+
 ### Windows File-Lock Gotcha
 
 `cargo test` fails with "access denied" if `filebitch.exe` is running. **Run `cargo test` BEFORE `tauri dev`, not after.** The E2E script handles its own process cleanup.
