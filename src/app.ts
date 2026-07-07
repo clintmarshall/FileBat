@@ -1352,9 +1352,6 @@ function renderTreeRow(nodeId: number, depth: number, parentSize?: number): HTML
     row.appendChild(files);
     row.appendChild(folders);
 
-    // Calculate bar width using running total of siblings
-    updateBar(bar, nameCell);
-
     // Click handler — expand/collapse or fetch children
     row.addEventListener('click', () => handleTreeExpand(nodeId, row, depth));
 
@@ -1371,6 +1368,8 @@ function renderTreeRow(nodeId: number, depth: number, parentSize?: number): HTML
         for (const child of node.children) {
             childrenContainer.appendChild(renderTreeRow(child.id, depth + 1, stats?.size));
         }
+        // Calculate bar widths now that all children are in the container
+        recalcSiblings(childrenContainer);
     }
 
     const wrapper = document.createElement('div');
@@ -1408,6 +1407,7 @@ async function handleTreeExpand(nodeId: number, row: HTMLElement, depth: number)
             for (const child of node.children) {
                 childrenContainer.appendChild(renderTreeRow(child.id, depth + 1, parentSize));
             }
+            recalcSiblings(childrenContainer);
         }
 
         // If children not loaded yet, pull from backend
@@ -1473,6 +1473,9 @@ async function fetchAndRenderChildren(parentId: number, depth: number, autoExpan
         for (const child of children) {
             childrenContainer.appendChild(renderTreeRow(child.id, depth + 1, parentSize));
         }
+
+        // Calculate bar widths now that all children are in the container
+        recalcSiblings(childrenContainer);
 
         // Auto-expand one more level during scan so stats have rows to land on
         if (autoExpand && depth < 2) {
