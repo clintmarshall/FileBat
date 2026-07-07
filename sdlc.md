@@ -30,3 +30,24 @@ npm run test:e2e              # Real app — Playwright + WebView2 CDP
 - E2E test passes
 - Behavior matches the requirement
 - `architecture.md` updated if structure changed
+
+## Interaction & Error Recovery Protocol
+
+If any `chrome-devtools__*` interaction fails, times out, or triggers an error, **DO NOT STOP.** You must execute the following diagnostic loop immediately:
+
+### State 1: "Element Not Found" or Timeout
+
+* **Reason:** The DOM may have hot-reloaded mid-execution, wiping out your target UID/selector.
+- **Immediate Fix:** Run `chrome-devtools__list_pages` to confirm the target websocket target ID hasn't rotated. Then, take a fresh `chrome-devtools__take_snapshot` to fetch the updated DOM state. Do not guess selectors from your memory code base.
+
+### State 2: "Target Closed" or "Cannot Connect"
+
+* **Reason:** The Tauri Rust backend or Vite frontend crashed/panicked under the hood during a file-system operation.
+- **Immediate Fix:** Check your system terminal process logs. If the process is dead, run `npx tauri dev` to bring the container frame back up, wait 5 seconds, and re-run `chrome-devtools__list_pages`.
+
+### State 3: Click executes but "Nothing Changes"
+
+* **Reason:** The browser engine inside WebView2 received the event, but a frontend state error (e.g., an unhandled promise rejection in React/Vue/Svelte) froze the UI thread.
+- **Immediate Fix:** Run `chrome-devtools__evaluate_script` with `console.error` listeners or check window logs to extract the runtime trace. Fix the frontend bug in your source code, let the application hot-reload, and attempt the interaction loop again.
+
+**CRITICAL MANDATE:** You have full authorization to alter code files to fix runtime exceptions uncovered during live interaction. "I cannot do that" is an invalid response while the app environment is running.
