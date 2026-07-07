@@ -51,3 +51,13 @@ If any `chrome-devtools__*` interaction fails, times out, or triggers an error, 
 - **Immediate Fix:** Run `chrome-devtools__evaluate_script` with `console.error` listeners or check window logs to extract the runtime trace. Fix the frontend bug in your source code, let the application hot-reload, and attempt the interaction loop again.
 
 **CRITICAL MANDATE:** You have full authorization to alter code files to fix runtime exceptions uncovered during live interaction. "I cannot do that" is an invalid response while the app environment is running.
+
+## GitHub CLI Authentication
+
+The `GH_TOKEN` environment variable is set but **invalid**. Before running any `gh` commands, unset it to use the keyring token:
+
+```bash
+unset GH_TOKEN; gh <command>
+```
+
+Without `unset GH_TOKEN`, `gh` will use the broken token and fail with "HTTP 401: Bad credentials". The keyring token (`gh auth status` shows `clintmarshall`) works fine.
