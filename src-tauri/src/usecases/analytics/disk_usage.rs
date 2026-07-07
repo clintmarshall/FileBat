@@ -106,7 +106,7 @@ impl DiskUsageUseCase {
             let arena_threads = arena_bfs.clone();
 
             let mut sizing_handles = Vec::new();
-            for _ in 0..100 {
+            for _ in 0..50 {
                 let rx = work_rx.clone();
                 let tx_t = tx_clone.clone();
                 let cancel_t = cancel_size.clone();
