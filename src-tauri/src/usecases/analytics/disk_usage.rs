@@ -13,10 +13,11 @@ use tokio::sync::{mpsc, oneshot};
 
 /// Orchestrates disk usage scans.
 ///
-/// Three-phase approach:
+/// Approach:
 /// - Phase 1: BFS discovers all folders (readdir only, no file stats)
 /// - Phase 2: Leaf folders sized in parallel (10 threads)
 /// - Phase 3: Rollup propagates totals bottom-up via parent pointers
+/// - Visual: emits `FolderStarted` for top-level folders when their first leaf is sized
 ///
 /// Arena-based: folders stored in FolderArena (SoA, first-child/next-sibling).
 /// Pull-based tree: emits `ScanTreeStarted` at start, thin `ScanTreeChildren`
@@ -94,21 +95,22 @@ impl DiskUsageUseCase {
             let mut queue: VecDeque<(NodeId, String)> = VecDeque::new();
             queue.push_back((root_id, root_path.clone()));
 
-            // ─── Sizing work queue (10 threads) ───
-            // Work items: (NodeId, path)
+            // ─── Sizing work queue (10 threads, leaf-based) ───
+            // Each thread sizes a leaf folder, writes to arena, and does parent-pointer rollup.
+            // Events stream to the frontend as each leaf completes.
             let (work_tx, work_rx) = std::sync::mpsc::channel::<(NodeId, String)>();
             let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
 
             let tx_clone = tx.clone();
             let cancel_size = cancel_blocking.clone();
-            let arena_size = arena_bfs.clone();
+            let arena_threads = arena_bfs.clone();
 
             let mut sizing_handles = Vec::new();
             for _ in 0..10 {
                 let rx = work_rx.clone();
                 let tx_t = tx_clone.clone();
                 let cancel_t = cancel_size.clone();
-                let arena_s = arena_size.clone();
+                let arena_t = arena_threads.clone();
 
                 let handle = std::thread::spawn(move || {
                     loop {
@@ -120,7 +122,7 @@ impl DiskUsageUseCase {
                             let lock = rx.lock().unwrap();
                             match lock.recv() {
                                 Ok(item) => item,
-                                Err(_) => break,
+                                Err(_) => break, // Channel closed
                             }
                         };
 
@@ -132,7 +134,7 @@ impl DiskUsageUseCase {
 
                         // Write stats to arena and do parent-pointer rollup
                         {
-                            let mut arena = arena_s.lock().unwrap();
+                            let mut arena = arena_t.lock().unwrap();
                             let idx = node_id.0 as usize;
 
                             // Write leaf stats
@@ -191,12 +193,13 @@ impl DiskUsageUseCase {
 
             const BATCH_SIZE: usize = 200;
 
+            let mut batch_leaves: Vec<(NodeId, String)> = Vec::new();
+
             loop {
                 if cancel_blocking.load(Ordering::Relaxed) {
                     break;
                 }
 
-                let mut batch_leaves: Vec<(NodeId, String)> = Vec::new();
                 let mut batch_discovered: Vec<(NodeId, u32)> = Vec::new();
 
                 // Process a batch from the BFS queue
@@ -228,6 +231,9 @@ impl DiskUsageUseCase {
                     }
                 }
 
+                // Sort queue alphabetically so the next batch processes in name order
+                queue.make_contiguous().sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+
                 // If nothing processed and queue is empty, we're done discovering
                 if batch_discovered.is_empty() && batch_leaves.is_empty() && queue.is_empty() {
                     break;
@@ -243,12 +249,13 @@ impl DiskUsageUseCase {
                 }
 
                 // Queue leaves for sizing
-                for (node_id, leaf_path) in batch_leaves {
+                for (node_id, leaf_path) in &batch_leaves {
                     if cancel_blocking.load(Ordering::Relaxed) {
                         break;
                     }
-                    let _ = work_tx.send((node_id, leaf_path));
+                    let _ = work_tx.send((*node_id, leaf_path.clone()));
                 }
+                batch_leaves.clear();
             }
 
             // Close sizing work queue — threads will drain and exit
@@ -261,8 +268,7 @@ impl DiskUsageUseCase {
 
             // ─── Final Rollup Pass ───
             // Sizing threads do parent-pointer rollup as they complete, so most nodes
-            // are already sized. This pass catches any remaining unsized nodes
-            // (e.g., leaves that weren't queued or parents whose siblings finished late).
+            // are already sized. This pass catches any remaining unsized nodes.
             {
                 let mut arena = arena_bfs.lock().unwrap();
                 for idx in (0..arena.len()).rev() {
@@ -437,6 +443,10 @@ fn size_folder_stats(path: &Path) -> (u64, u64, u64) {
     (size, file_count, folder_count)
 }
 
+/// Size an entire subtree with a single WalkDir pass.
+/// For each file, adds its size to all ancestor folders up to the root.
+/// For each directory, increments the folder_count of all ancestors.
+/// Returns FolderUsage for every folder in the subtree, sorted by depth (children first).
 /// Read immediate subdirectories of a path.
 /// Returns list of (name, normalized_path) tuples.
 fn readdir_names(
@@ -467,6 +477,8 @@ fn readdir_names(
         Err(_) => {} // Skip inaccessible directories
     }
 
+    // Sort alphabetically so BFS discovers folders in name order
+    children.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
     children
 }
 

@@ -114,6 +114,41 @@ let pendingStats: PendingStats[] = [];
 let pendingProgress: { percentage: number; message: string } | null = null;
 let flushScheduled = false;
 
+/// Update a single size bar and recalculate all siblings using the running total
+/// of sized children. Bars grow progressively as siblings get sized, then settle
+/// when the parent is fully sized (parentSize === runningSize).
+function updateBar(bar: HTMLElement, nameCell: HTMLElement) {
+    const size = parseFloat(bar.dataset.size || '0');
+    if (size <= 0) {
+        bar.style.width = '0%';
+        return;
+    }
+    bar.dataset.size = String(size);
+    recalcSiblings(siblingsContainerOf(nameCell));
+}
+
+/// Recalculate all bars in a children container.
+/// Uses parentSize if known (scan complete for this folder),
+/// otherwise uses runningSize (sum of sized children so far).
+function recalcSiblings(container: HTMLElement) {
+    const parentSize = parseFloat(container.dataset.parentSize || '0');
+    const denom = parentSize > 0 ? parentSize : parseFloat(container.dataset.runningSize || '0');
+    if (denom <= 0) return;
+    const bars = container.querySelectorAll('.tree-size-bar') as NodeListOf<HTMLElement>;
+    for (let i = 0; i < bars.length; i++) {
+        const s = parseFloat(bars[i].dataset.size || '0');
+        bars[i].style.width = `${Math.min(100, Math.max(0, (s / denom) * 100))}%`;
+    }
+}
+
+/// Find the children container that holds this row and its siblings.
+/// DOM: nameCell → row → wrapper → childrenContainer (sibling rows live here).
+function siblingsContainerOf(nameCell: HTMLElement): HTMLElement {
+    const row = nameCell.parentElement ?? nameCell.closest('.usage-tree-row');
+    const wrapper = row?.parentElement;
+    return wrapper?.parentElement ?? nameCell;
+}
+
 /// Flush all pending events in a single batch.
 /// Called once per animation frame to minimize DOM thrashing.
 function flushPendingEvents() {
@@ -162,38 +197,28 @@ function flushPendingEvents() {
         if (sizeEl) sizeEl.textContent = formatSize(usage.size);
         if (barEl) {
             barEl.dataset.size = String(usage.size);
-            // Find parent size from the children container that holds this row
-            const parentContainer = row.parentElement?.parentElement as HTMLElement | null;
-            const parentSize = parentContainer?.dataset.parentSize
-                ? parseFloat(parentContainer.dataset.parentSize)
-                : undefined;
-            // Root (depth 0) = 100%, children = percentage of parent, unknown = 0%
             const nameCell = row.querySelector('.tree-name-cell') as HTMLElement;
-            const indent = nameCell?.querySelector('.tree-indent') as HTMLElement;
-            const rowDepth = indent ? parseInt(indent.style.width.replace('px', '')) / 16 : 0;
-            const pct = parentSize !== undefined && parentSize > 0
-                ? (usage.size / parentSize) * 100
-                : (rowDepth === 0 ? 100 : 0);
-            barEl.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+
+            // Update runningSize on the container that holds this row (siblings container)
+            const siblingContainer = siblingsContainerOf(nameCell);
+            const currentRunning = parseFloat(siblingContainer.dataset.runningSize || '0');
+            siblingContainer.dataset.runningSize = String(currentRunning + usage.size);
+
+            updateBar(barEl, nameCell);
         }
 
-        // If this is a parent folder, update its children container's parentSize
-        // so children bars can be recalculated
+        // Highlight the row while being processed
+        row.classList.add('scanning');
+
+        // Update children container so children bars can recalculate
         const childrenContainer = row.nextElementSibling as HTMLElement | null;
-        if (childrenContainer && usage.size > 0) {
+        if (childrenContainer) {
             childrenContainer.dataset.parentSize = String(usage.size);
-            // Recalculate all children bars now that we know the parent size
-            const childRows = childrenContainer.querySelectorAll('.usage-tree-row');
+            recalcSiblings(childrenContainer);
+            // Remove scanning from children now that parent is fully sized
+            const childRows = childrenContainer.querySelectorAll('.usage-tree-row.scanning');
             for (let i = 0; i < childRows.length; i++) {
-                const childRow = childRows[i] as HTMLElement;
-                const childBar = childRow.querySelector('.tree-size-bar') as HTMLElement | null;
-                if (childBar) {
-                    const childSize = parseFloat(childBar.dataset.size || '0');
-                    if (childSize > 0) {
-                        const childPct = (childSize / usage.size) * 100;
-                        childBar.style.width = `${Math.min(100, Math.max(0, childPct))}%`;
-                    }
-                }
+                (childRows[i] as HTMLElement).classList.remove('scanning');
             }
         }
         if (filesEl) filesEl.textContent = usage.fileCount.toLocaleString();
@@ -998,6 +1023,11 @@ function resetScanUI() {
     btnCancelScan.classList.add('hidden');
     btnScan.disabled = false;
     activeScanId = null;
+
+    // Clear scanning highlights
+    document.querySelectorAll('.usage-tree-row.scanning').forEach(row => {
+        row.classList.remove('scanning');
+    });
 }
 
 function clearTabResults(containerId: string, message: string) {
@@ -1295,15 +1325,9 @@ function renderTreeRow(nodeId: number, depth: number, parentSize?: number): HTML
 
     const bar = document.createElement('span');
     bar.className = 'tree-size-bar';
+    bar.style.width = '0%';
     if (stats && stats.size > 0) {
         bar.dataset.size = String(stats.size);
-        // Root (depth 0) = 100%, children = percentage of parent, unknown parent = 0%
-        const pct = parentSize !== undefined && parentSize > 0
-            ? (stats.size / parentSize) * 100
-            : (depth === 0 ? 100 : 0);
-        bar.style.width = `${Math.min(100, Math.max(0, pct))}%`;
-    } else {
-        bar.style.width = '0%';
     }
 
     const files = document.createElement('span');
@@ -1328,12 +1352,16 @@ function renderTreeRow(nodeId: number, depth: number, parentSize?: number): HTML
     row.appendChild(files);
     row.appendChild(folders);
 
+    // Calculate bar width using running total of siblings
+    updateBar(bar, nameCell);
+
     // Click handler — expand/collapse or fetch children
     row.addEventListener('click', () => handleTreeExpand(nodeId, row, depth));
 
     // Children container — store parent size for bar calculations
     const childrenContainer = document.createElement('div');
     childrenContainer.className = 'usage-tree-children' + (isExpanded ? ' expanded' : '');
+    childrenContainer.dataset.runningSize = '0';
     if (stats?.size) {
         childrenContainer.dataset.parentSize = String(stats.size);
     }
@@ -1435,6 +1463,7 @@ async function fetchAndRenderChildren(parentId: number, depth: number, autoExpan
         if (!childrenContainer) return;
 
         // Store parent size for bar calculations
+        childrenContainer.dataset.runningSize = '0';
         const parentSize = existing?.stats?.size;
         if (parentSize) {
             childrenContainer.dataset.parentSize = String(parentSize);

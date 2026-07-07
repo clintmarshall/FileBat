@@ -247,7 +247,7 @@ async function testScanPath(page) {
 async function testDiskUsageScan(page, consoleMessages) {
 	console.log('\nStarting disk usage scan...');
 
-	const scanDir = path.join(__dirname, 'src');
+	const scanDir = 'E:\\projects';
 	console.log(`  Scanning: ${scanDir}`);
 	await page.fill('#scan-path', scanDir);
 
@@ -257,7 +257,7 @@ async function testDiskUsageScan(page, consoleMessages) {
 
 	console.log('  Waiting for scan to complete...');
 	try {
-		await page.waitForSelector('#analytics-summary', { state: 'visible', timeout: 60000 });
+		await page.waitForSelector('#analytics-summary', { state: 'visible', timeout: 120000 });
 		console.log('  ✓ PASS: Scan completed');
 
 		const resultRows = await page.locator('#usage-results .usage-tree-row').count();

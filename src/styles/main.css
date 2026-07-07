@@ -566,6 +566,11 @@ html, body {
     background: var(--bg-hover);
 }
 
+.usage-tree-row.scanning {
+    background: rgba(0, 120, 212, 0.08);
+    transition: background 0.3s ease;
+}
+
 .usage-tree-row:last-child {
     border-bottom: none;
 }
@@ -600,6 +605,12 @@ html, body {
     min-width: 0;
 }
 
+.tree-size {
+    text-align: right;
+    padding-right: 8px;
+    white-space: nowrap;
+}
+
 /* Name cell is a flex container for indent + toggle + icon + name */
 .tree-name-cell {
     display: flex;
@@ -622,6 +633,7 @@ html, body {
     border-radius: 2px;
     opacity: 0.35;
     min-width: 2px;
+    transition: width 0.2s ease;
 }
 
 .tree-files,
