@@ -46,11 +46,12 @@ impl AnalyticsUseCase {
         let t = self.tree.lock().unwrap();
         let arena_arc = t.get(scan_id)?;
         let arena = arena_arc.lock().unwrap();
+        let structural = arena.structural_ref()?;
         let mut children = Vec::new();
-        for id in arena.children(parent_id) {
+        for id in arena.children(structural, parent_id) {
             children.push(ScanTreeChild {
                 id,
-                name: arena.name(id).to_string(),
+                name: arena.name(structural, id).to_string(),
             });
         }
         // Sort by name for consistent rendering
