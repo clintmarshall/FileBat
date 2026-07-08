@@ -19,57 +19,58 @@ If you are a new Claude Code session launched after a context handoff:
 
 ---
 
-## Last Session: 2026-07-07
+## Current Session: 2026-07-08
 
 **Branch:** `feature/tree-drilldown`
 
 ### Where We Left Off
 
-**Context management system — built, not tested.**
+**E2E scan assertions implemented and passing.**
 
-1. **SESSION-CURRENT.md** — living document, created and maintained
-2. **SESSION-RESUME.md** — this file, ready for handoff
-3. **context_manager.sh** — complete rewrite. Polls llama-server metrics, triggers handoff at 85%, coordinates via sentinel files, resets server, relaunches fresh session
-4. **context_state.json** — structured state file written every poll. Dashboard-ready. Contains: current status, token usage, handoff history with timestamps and results
+1. **E2E test improvements:**
+   - Scan completes in <10s (5.98s for E:\projects)
+   - UI updates during scan (polls every 500ms)
+   - First 20 rows have complete data (size + files + folders)
+   - Fallback completion detection via progress bar
 
-**Status:** Script written. Session files created. Memory entries saved. JSON structure validated. **Not yet tested end-to-end.**
+2. **Root stats fix:**
+   - `scan:complete` handler applies root stats from summary if chunk events haven't flushed
+   - Fixes rAF flush race condition
+
+3. **All tests pass:** 125 frontend, 67 Rust, E2E green
 
 ### What to Do Next
 
-**Primary action — run the E2E test to verify the handoff didn't break anything:**
+**Primary action — merge PR #3:**
 ```bash
-npm run test:e2e
+unset GH_TOKEN && gh pr merge 3 --squash
 ```
-
-**Then:** continue with whatever work was in progress. See SESSION-CURRENT.md for details.
+Note: Permission classifier may block this — user needs to approve.
 
 **Secondary:**
-- Tune handoff threshold if 90% proved too aggressive or too lenient
-- Build dashboard from `context_state.json` (future work)
-- Update this file when the session ends or context gets tight.
+- Consider making `ignore` the default implementation (100x faster)
+- Tree drilldown polish if needed
 
 ### Behavior Rules
 
-- **No assessment theatre.** Summary is fine, but it must be immediately followed by an action. First output = doing something, not reporting.
-- **One primary action at a time.** This section always has exactly one top item — do it, don't choose between options.
+- **No assessment theatre.** Summary is fine, but it must be immediately followed by an action.
+- **One primary action at a time.**
 
 ### Watch Out For
 
 - The user dislikes "magic" — everything must be visible, referenceable, plain files
-- The user wants autonomous capability — continue work without prompting when context fills
-- Git Bash on Windows — `//F` not `/F` for taskkill, Python for env var propagation
+- Git Bash on Windows — `//F` not `/F` for taskkill
 - TDD mandate — tests before implementation, always
+- Vite dev server serves `src/app.ts` directly — no rebuild needed for JS changes
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `sessions/SESSION-CURRENT.md` | Living session state — updated throughout |
-| `sessions/SESSION-RESUME.md` | This file — resume brief for next session |
-| `sessions/2026-07-*.md` | Archived session records |
-| `context_manager.sh` | Watchdog script — polls metrics, triggers handoff |
-| `context_state.json` | Structured state — written every poll, dashboard-ready |
+| `sessions/SESSION-CURRENT.md` | Living session state |
+| `sessions/SESSION-RESUME.md` | This file — resume brief |
+| `playwright.tauri.cjs` | E2E tests |
+| `src/app.ts` | Frontend application |
 | `architecture.md` | Living architecture document |
-| `sdlc.md` | Development workflow, error recovery |
 
 ---
