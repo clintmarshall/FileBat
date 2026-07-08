@@ -121,7 +121,8 @@ filebitch/
 │       │   └── analytics/          # AnalyticsUseCase — scan orchestration + MPSC streaming
 │       │       ├── mod.rs          #   AnalyticsUseCase — scan lifecycle (register/cancel/unregister)
 │       │       ├── aggregator.rs   #   FolderUsageAccumulator, SizeGrouping, HashGrouping — pure math
-│       │       ├── disk_usage.rs   #   DiskUsageUseCase — walkdir + MPSC channel emit
+│       │       ├── arena.rs        #   FolderArena — SoA tree, FC/NS links, string pool
+│       │       ├── disk_usage.rs   #   DiskUsageUseCase — BFS + arena, parent-pointer rollup
 │       │       ├── large_files.rs  #   LargeFilesUseCase — walkdir + MPSC channel emit
 │       │       ├── duplicates.rs   #   DuplicatesUseCase — 3-stage funnel + MPSC channel emit
 │       │       └── snapshot.rs     #   SnapshotUseCase — SQLite save/query delegation
@@ -175,6 +176,26 @@ Native filesystem watch events update the current folder view without polling.
 ### 9. Icon caching
 `HashMap<PathBuf, IconHandle>` in the backend. Icons are base64-encoded and sent once per file type.
 
+### 10. Three-phase disk usage scanning
+**Phase 1 — Structure (BFS readdir, pull-based):** Breadth-first discovery using `readdir` only. Zero file stats, zero `metadata()` calls. Emits `scan:tree_started` (root info with rootId) at start, then thin `scan:children_ready` events (`{parentId, childCount}` — 16 bytes) per folder as children are discovered. Frontend renders the root, then fetches children on expand via `get_scan_tree_children` command. Tree stored in backend memory — O(children) IPC per expand, not O(entire tree).
+
+**Phase 2 — Leaf Sizing (parallel, 10 threads):** Only folders with no subdirectories (leaves) are queued for sizing. Each thread walks one leaf folder with WalkDir, counting files, subfolders, and total size. Every file on disk is visited exactly once. Results are emitted as `scan:chunk` events (NodeId-based) and stored inline in the arena.
+
+**Phase 3 — Rollup (parent-pointer walk):** After each leaf is sized, walk the parent chain: check if all siblings are sized → roll up → cascade upward. Single arena lock, one path walk. No separate HashMap, no pending HashSet, no notification channel.
+
+**Why not walk every folder?** The previous approach walked every folder's entire subtree. A file in `E:/Users/Clint/docs/notes.txt` was visited 4+ times (once per ancestor). With leaf-only sizing + rollup, every file is visited exactly once. Parent totals are a cheap in-memory sum.
+
+### 11. NodeId-based FolderArena (Structure of Arrays)
+Every folder identity is a `NodeId(u32)` — an index into the `FolderArena` Vec. The arena stores structural vectors (`parent`, `first_child`, `next_sibling`, `name_id`) and metadata vectors (`size`, `file_count`, `folder_count`, `sized`) separately for cache-line efficiency.
+
+**First-child/next-sibling tree:** Zero heap allocation per directory. Children are linked via `first_child` (pointer to first child) and `next_sibling` (pointer to next sibling). Iteration follows the chain.
+
+**String pool:** One copy of every folder name, deduplicated via `HashMap<String, NameId>`.
+
+**Memory:** ~48 bytes per folder (vs ~340 bytes with path strings). For 500K folders: ~24 MB backend + ~10 MB frontend (expanded nodes only) = **94% reduction** vs ~900 MB with path-string-based storage.
+
+**Frontend:** `treeStore: Map<NodeId, TreeNodeData>` replaces `knownChildren: Map<path, ...>`. Children pulled on demand via `get_scan_tree_children`. `pathMap: Map<NodeId, PathInfo>` resolves paths lazily. `data-node-id` attribute on DOM rows enables O(1) lookup (no path normalization hacks).
+
 ---
 
 ## Dependencies
@@ -221,6 +242,7 @@ Native filesystem watch events update the current folder view without polling.
 | `start_find_large_files` | `{ path, minSize, maxResults }` | `Result<String, String>` (scan_id) | scan |
 | `start_find_duplicates` | `{ path }` | `Result<String, String>` (scan_id) | scan |
 | `cancel_scan` | `{ scanId }` | `bool` | scan |
+| `get_scan_tree_children` | `{ scanId, parentId }` | `Vec<ScanTreeChild>` | scan |
 | `snapshot_usage` | `{ path, totalSize, fileCount, folderCount, topFolders }` | `Result<UsageSnapshot, String>` | scan |
 | `usage_history` | `{ path, start, end }` | `Result<Vec<UsageSnapshot>, String>` | scan |
 
@@ -263,11 +285,44 @@ pub enum AppError {
 ### FolderUsage
 ```rust
 pub struct FolderUsage {
-    pub path: String,
+    pub node_id: NodeId,    // Replaces path — index into FolderArena
     pub size: u64,
     pub file_count: u64,
     pub folder_count: u64,
-    pub depth: u32,
+}
+```
+
+### NodeId / NameId
+```rust
+pub struct NodeId(pub u32);   // Index into FolderArena Vec — Copy semantics
+pub struct NameId(pub u32);   // Index into deduplicated string pool
+```
+
+### ScanTreeChild (Pull Response)
+```rust
+pub struct ScanTreeChild {
+    pub id: NodeId,
+    pub name: String,
+}
+```
+
+### ScanTreeChildren (Thin Event)
+```rust
+// Emitted during BFS — only id + count, no full child array
+pub struct ScanTreeChildren {
+    pub scan_id: String,
+    pub parent_id: NodeId,
+    pub child_count: u32,
+}
+```
+
+### ScanTreeStarted
+```rust
+pub struct ScanTreeStarted {
+    pub scan_id: String,
+    pub root_id: NodeId,
+    pub root_path: String,
+    pub root_name: String,
 }
 ```
 
@@ -319,6 +374,11 @@ interface AppState {
     historyIndex: number;    // Current position in history
     selectedIndex: number;   // Currently selected row index
 }
+
+// Tree state (NodeId-based):
+const treeStore: Map<number, TreeNodeData>;  // NodeId → {childCount, children?, stats?}
+const expandedPaths: Set<number>;            // Expanded NodeIds
+const pathMap: Map<number, PathInfo>;        // NodeId → {path, name}
 ```
 
 ### Component Structure

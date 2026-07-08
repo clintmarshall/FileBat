@@ -1,4 +1,4 @@
-use crate::domain::{AppError, UsageSnapshot};
+use crate::domain::{AppError, NodeId, ScanTreeChild, UsageSnapshot};
 use crate::infrastructure::SqliteAnalytics;
 use crate::usecases::AnalyticsUseCase;
 use std::sync::Arc;
@@ -29,6 +29,21 @@ pub async fn start_scan_usage(
         .scan_usage(window, path, max_depth)
         .await
         .map_err(|e: AppError| e.to_user_message())
+}
+
+/// Get children of a folder from the in-memory tree state.
+/// Returns children if discovered, empty array if not yet discovered.
+#[tauri::command]
+pub fn get_scan_tree_children(
+    scan_id: String,
+    parent_id: u32,
+    analytics: tauri::State<'_, AnalyticsState>,
+) -> Vec<ScanTreeChild> {
+    let result = analytics.get_children(&scan_id, NodeId(parent_id)).unwrap_or_default();
+    if parent_id == 0 {
+        println!("[DEBUG] get_scan_tree_children root: scan_id={}, result_len={}", scan_id, result.len());
+    }
+    result
 }
 
 // ─── Large Files ───

@@ -1,12 +1,16 @@
+mod arena;
 mod aggregator;
 mod disk_usage;
+#[cfg(feature = "ignore-walker")]
+mod disk_usage_ignore;
 mod duplicates;
 mod large_files;
 mod snapshot;
 
+use arena::FolderArena;
 use snapshot::SnapshotUseCase;
 
-use crate::domain::{AppError, UsageSnapshot};
+use crate::domain::{AppError, NodeId, ScanTreeChild, UsageSnapshot};
 use crate::infrastructure::SqliteAnalytics;
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,13 +29,39 @@ use std::time::Instant;
 pub struct AnalyticsUseCase {
     /// Shared state for tracking active scans (cancel flags).
     scans: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// One arena per scan — folder tree stored as SoA with first-child/next-sibling.
+    /// Wrapped in Arc<Mutex<>> so the BFS thread writes and the frontend reads concurrently.
+    tree: Arc<Mutex<HashMap<String, Arc<Mutex<FolderArena>>>>>,
 }
 
 impl AnalyticsUseCase {
     pub fn new() -> Self {
         Self {
             scans: Arc::new(Mutex::new(HashMap::new())),
+            tree: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get children for a folder in the tree.
+    /// Looks up by NodeId, resolves names from the arena string pool.
+    pub fn get_children(&self, scan_id: &str, parent_id: NodeId) -> Option<Vec<ScanTreeChild>> {
+        let t = self.tree.lock().unwrap();
+        let arena_arc = t.get(scan_id)?;
+        let arena = arena_arc.lock().unwrap();
+        let structural = arena.structural_ref()?;
+        let mut children = Vec::new();
+        for id in arena.children(structural, parent_id) {
+            children.push(ScanTreeChild {
+                id,
+                name: arena.name(structural, id).to_string(),
+            });
+        }
+        // Sort by name for consistent rendering
+        children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if parent_id.0 == 0 {
+            println!("[DEBUG] get_children root: arena_len={}, children_len={}, structural_first_child={:?}", arena.len(), children.len(), structural.first_child.get(0));
+        }
+        Some(children)
     }
 
     /// Generate a unique scan id.
@@ -68,7 +98,12 @@ impl AnalyticsUseCase {
 
     /// Scan a directory tree for disk usage.
     ///
+    /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
+    ///
+    /// Implementation:
+    /// - Default: two-phase BFS + crossbeam + WalkDir (original)
+    /// - With `ignore-walker` feature: single-pass `ignore::WalkParallel`
     pub async fn scan_usage(
         &self,
         window: tauri::WebviewWindow,
@@ -85,20 +120,45 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
+        let scans = self.scans.clone();
+        let tree = self.tree.clone();
 
-        // run() returns a future that resolves when the scan + emission is fully done
-        disk_usage::DiskUsageUseCase::run(
-            window,
-            path,
-            max_depth,
-            cancel_clone,
-            start,
-            id_run,
-        )
-        .await;
+        // Spawn as background task — return scan_id immediately so the frontend
+        // can process events as they arrive. The invoke() won't block the UI.
+        tokio::spawn(async move {
+            #[cfg(feature = "ignore-walker")]
+            {
+                println!(
+                    "[DISK_USAGE] Using ignore::WalkParallel implementation (feature=ignore-walker)"
+                );
+                disk_usage_ignore::DiskUsageUseCase::run(
+                    window,
+                    path,
+                    max_depth,
+                    cancel_clone,
+                    start,
+                    id_run,
+                    tree,
+                )
+                .await;
+            }
 
-        // Unregister after the scan is done (completed or cancelled)
-        self.scans.lock().unwrap().remove(&id_unregister);
+            #[cfg(not(feature = "ignore-walker"))]
+            {
+                disk_usage::DiskUsageUseCase::run(
+                    window,
+                    path,
+                    max_depth,
+                    cancel_clone,
+                    start,
+                    id_run,
+                    tree,
+                )
+                .await;
+            }
+            // Clean up cancel flag when scan finishes (completed or cancelled)
+            scans.lock().unwrap().remove(&id_unregister);
+        });
 
         Ok(id)
     }
@@ -109,6 +169,7 @@ impl AnalyticsUseCase {
 
     /// Find large files in a directory tree.
     ///
+    /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
     pub async fn find_large_files(
         &self,
@@ -127,13 +188,15 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
+        let scans = self.scans.clone();
 
-        large_files::LargeFilesUseCase::run(
-            window, path, min_size, max_results, cancel_clone, start, id_run,
-        )
-        .await;
-
-        self.scans.lock().unwrap().remove(&id_unregister);
+        tokio::spawn(async move {
+            large_files::LargeFilesUseCase::run(
+                window, path, min_size, max_results, cancel_clone, start, id_run,
+            )
+            .await;
+            scans.lock().unwrap().remove(&id_unregister);
+        });
 
         Ok(id)
     }
@@ -144,6 +207,7 @@ impl AnalyticsUseCase {
 
     /// Find duplicate files using the 3-stage funnel.
     ///
+    /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
     pub async fn find_duplicates(
         &self,
@@ -160,10 +224,12 @@ impl AnalyticsUseCase {
         let id_run = id.clone();
         let id_unregister = id.clone();
         let cancel_clone = cancel.clone();
+        let scans = self.scans.clone();
 
-        duplicates::DuplicatesUseCase::run(window, path, cancel_clone, start, id_run).await;
-
-        self.scans.lock().unwrap().remove(&id_unregister);
+        tokio::spawn(async move {
+            duplicates::DuplicatesUseCase::run(window, path, cancel_clone, start, id_run).await;
+            scans.lock().unwrap().remove(&id_unregister);
+        });
 
         Ok(id)
     }

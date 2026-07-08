@@ -15,9 +15,14 @@ fn normalize_path(path: &std::path::Path) -> String {
 /// This struct owns the state math (HashMap updates, depth calculations,
 /// ancestor traversal) so the Use Cases stay focused on orchestration
 /// (walkdir iteration, cancel checks, event emission).
+///
+/// NOTE: This is legacy code from the path-based scan. The arena-based scan
+/// in disk_usage.rs no longer uses this, but it's kept for aggregator tests.
 pub struct FolderUsageAccumulator {
     /// Per-folder accumulated stats, keyed by normalized path string.
     folder_map: HashMap<String, FolderUsage>,
+    /// Auto-incrementing node_id for test entries.
+    next_id: u32,
     /// Total files seen across all folders.
     total_files: u64,
     /// Maximum ancestor depth to attribute file sizes to.
@@ -28,22 +33,23 @@ pub struct FolderUsageAccumulator {
 
 impl FolderUsageAccumulator {
     pub fn new(base_path: &str, max_depth: u32) -> Self {
+        use crate::domain::NodeId;
         let base = Path::new(base_path);
         let base_depth = base.components().count() as u32;
 
         // Seed the root folder with normalized path
         let root_key = normalize_path(base);
         let mut folder_map = HashMap::new();
-        folder_map.insert(root_key, FolderUsage {
-            path: normalize_path(base),
+        folder_map.insert(root_key.clone(), FolderUsage {
+            node_id: NodeId(0),
             size: 0,
             file_count: 0,
             folder_count: 1,
-            depth: 0,
         });
 
         Self {
             folder_map,
+            next_id: 1,
             total_files: 0,
             max_depth,
             base_depth,
@@ -55,6 +61,7 @@ impl FolderUsageAccumulator {
     /// Attributes the file size to every ancestor **folder** up to max_depth.
     /// Starts from the file's parent directory, not the file itself.
     pub fn record_file(&mut self, path: &std::path::Path, size: u64) {
+        use crate::domain::NodeId;
         self.total_files += 1;
 
         // Start from the file's parent directory, not the file itself
@@ -71,17 +78,19 @@ impl FolderUsageAccumulator {
                 break;
             }
             let key = normalize_path(ancestor);
-            let folder_depth = ancestor_count - self.base_depth;
 
             let entry = self
                 .folder_map
-                .entry(key)
-                .or_insert_with(|| FolderUsage {
-                    path: normalize_path(ancestor),
-                    size: 0,
-                    file_count: 0,
-                    folder_count: 0,
-                    depth: folder_depth,
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    FolderUsage {
+                        node_id: NodeId(id),
+                        size: 0,
+                        file_count: 0,
+                        folder_count: 0,
+                    }
                 });
 
             entry.size += size;
@@ -96,28 +105,30 @@ impl FolderUsageAccumulator {
     ///
     /// Creates a FolderUsage entry if one doesn't already exist for this path.
     pub fn record_directory(&mut self, path: &std::path::Path) {
+        use crate::domain::NodeId;
         let key = normalize_path(path);
         let path_count = path.components().count() as u32;
         if path_count < self.base_depth {
             // Path is above the base (e.g., symlink target outside the tree)
             return;
         }
-        let folder_depth = path_count - self.base_depth;
-
-        self.folder_map.entry(key).or_insert_with(|| FolderUsage {
-            path: normalize_path(path),
-            size: 0,
-            file_count: 0,
-            folder_count: 1,
-            depth: folder_depth,
+        self.folder_map.entry(key).or_insert_with(|| {
+            let id = self.next_id;
+            self.next_id += 1;
+            FolderUsage {
+                node_id: NodeId(id),
+                size: 0,
+                file_count: 0,
+                folder_count: 1,
+            }
         });
     }
 
-    /// Finalize: sort by size descending, then path ascending for stability.
+    /// Finalize: sort by size descending, then node_id ascending for stability.
     /// Returns the sorted Vec and total files seen.
     pub fn finalize(self) -> (Vec<FolderUsage>, u64) {
         let mut folders: Vec<FolderUsage> = self.folder_map.into_values().collect();
-        folders.sort_by(|a, b| b.size.cmp(&a.size).then(a.path.cmp(&b.path)));
+        folders.sort_by(|a, b| b.size.cmp(&a.size).then(a.node_id.0.cmp(&b.node_id.0)));
         (folders, self.total_files)
     }
 
@@ -244,13 +255,11 @@ mod tests {
         assert_eq!(total_files, 1);
 
         // File attributed to: base/a (parent) and base (root) = 2 folders
-        let sizes: Vec<(String, u64)> = folders.into_iter().map(|f| (f.path, f.size)).collect();
-
         // Both ancestors should have size 100
-        for (path, size) in &sizes {
-            assert_eq!(*size, 100, "Folder {} should have size 100", path);
+        for f in &folders {
+            assert_eq!(f.size, 100, "Folder {} should have size 100", f.node_id.0);
         }
-        assert_eq!(sizes.len(), 2, "Expected 2 ancestor folders");
+        assert_eq!(folders.len(), 2, "Expected 2 ancestor folders");
     }
 
     #[test]
@@ -269,8 +278,7 @@ mod tests {
         let (folders, _) = acc.finalize();
 
         // Root folder should have the file size (it IS the immediate parent)
-        let base_normalized = normalize_path(base);
-        let root = folders.iter().find(|f| f.path == base_normalized);
+        let root = folders.iter().find(|f| f.node_id == crate::domain::NodeId(0));
         assert!(root.is_some(), "Root folder should exist");
         assert_eq!(root.unwrap().size, 50, "Root should have file size");
 
@@ -289,8 +297,8 @@ mod tests {
         acc.record_directory(&dir_path);
 
         let (folders, _) = acc.finalize();
-        let dir_normalized = normalize_path(&dir_path);
-        let dir_entry = folders.iter().find(|f| f.path == dir_normalized);
+        // The directory entry should have folder_count=1 (root has node_id=0, dir has node_id=1)
+        let dir_entry = folders.iter().find(|f| f.node_id != crate::domain::NodeId(0));
         assert!(dir_entry.is_some());
         assert_eq!(dir_entry.unwrap().folder_count, 1);
     }
@@ -298,26 +306,25 @@ mod tests {
  
     #[test]
     fn sorts_by_size_descending() {
+        use crate::domain::NodeId;
         let mut acc = FolderUsageAccumulator::new("/root", 2);
         // Manually inject for simplicity
         acc.folder_map.insert(
             "/small".into(),
             FolderUsage {
-                path: "/small".into(),
+                node_id: NodeId(10),
                 size: 10,
                 file_count: 1,
                 folder_count: 0,
-                depth: 1,
             },
         );
         acc.folder_map.insert(
             "/large".into(),
             FolderUsage {
-                path: "/large".into(),
+                node_id: NodeId(11),
                 size: 1000,
                 file_count: 5,
                 folder_count: 0,
-                depth: 1,
             },
         );
 

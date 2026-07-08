@@ -519,3 +519,146 @@ html, body {
     margin-left: 8px;
     vertical-align: middle;
 }
+
+/* === Usage Tree === */
+
+.usage-tree-header {
+    display: grid;
+    grid-template-columns: 1fr 70px minmax(80px, 1fr) 50px 50px;
+    align-items: center;
+    height: 26px;
+    padding: 0 8px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-color);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    position: sticky;
+    top: 0;
+    user-select: none;
+}
+
+.tree-col-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-col-size { text-align: right; }
+.tree-col-bar { }
+.tree-col-files { text-align: right; }
+.tree-col-folders { text-align: right; }
+
+.usage-tree-body {
+    overflow-y: auto;
+}
+
+.usage-tree-row {
+    display: grid;
+    grid-template-columns: 1fr 70px minmax(80px, 1fr) 50px 50px;
+    align-items: center;
+    height: 24px;
+    padding: 0 8px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    border-bottom: 1px solid transparent;
+}
+
+.usage-tree-row:hover {
+    background: var(--bg-hover);
+}
+
+.usage-tree-row.scanning {
+    background: rgba(0, 120, 212, 0.08);
+    transition: background 0.3s ease;
+}
+
+.usage-tree-row:last-child {
+    border-bottom: none;
+}
+
+/* Name cell — contains indent + toggle + icon + name */
+.tree-indent { flex-shrink: 0; }
+
+.tree-toggle {
+    flex-shrink: 0;
+    width: 12px;
+    text-align: center;
+    font-size: 8px;
+    color: var(--text-secondary);
+    transition: transform 0.15s ease;
+}
+
+.tree-toggle.expanded {
+    transform: rotate(90deg);
+}
+
+.tree-icon {
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    font-size: 12px;
+}
+
+.tree-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.tree-size {
+    text-align: right;
+    padding-right: 8px;
+    white-space: nowrap;
+}
+
+/* Name cell is a flex container for indent + toggle + icon + name */
+.tree-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.tree-size {
+    text-align: right;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.tree-size-bar {
+    display: block;
+    height: 6px;
+    background: var(--accent);
+    border-radius: 2px;
+    opacity: 0.35;
+    min-width: 2px;
+    transition: width 0.2s ease;
+}
+
+.tree-files,
+.tree-folders {
+    text-align: right;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.usage-tree-children {
+    display: none;
+    border-left: 1px solid var(--border-color);
+    margin-left: 10px;
+    padding-left: 0;
+}
+
+.usage-tree-children.expanded {
+    display: block;
+}
+
+/* === Performance Overlay === */
+#perf-overlay {
+    float: right;
+    margin-right: 8px;
+    color: #888;
+    font-size: 11px;
+    font-family: 'Consolas', 'Courier New', monospace;
+}

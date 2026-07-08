@@ -55,23 +55,63 @@ Launches the compiled `filebitch.exe` with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENT
 
 **Prerequisite:** `cargo build` must have run first (binary at `target/debug/filebitch.exe`).
 
+## Interactive App Launch (CRITICAL — DO NOT SKIP)
+
+To interact with the running app via Chrome DevTools MCP, launch with CDP port:
+
+```bash
+uv run python -c "
+import subprocess, os, time
+env = os.environ.copy()
+env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--remote-debugging-port=9222 --disable-http-cache --disable-cache'
+try: subprocess.run(['taskkill', '/F', '/IM', 'filebitch.exe'], capture_output=True)
+except: pass
+time.sleep(1)
+p = subprocess.Popen(['E:/projects/filebitch/target/debug/filebitch.exe'], env=env, creationflags=subprocess.DETACHED_PROCESS)
+print(f'Launched PID: {p.pid}')
+"
+```
+
+**Why Python?** `cmd /c set VAR=val && exe` does NOT propagate env vars to child processes. Only Python `subprocess.Popen` with explicit `env=` works reliably from the Bash tool.
+
+**After launch:** wait ~5 seconds, then `chrome-devtools__list_pages` → `take_snapshot` → interact.
+
+**NEVER** use `npx tauri dev` to launch for interactive work — it does NOT set the CDP port.
+**NEVER** use `cmd /c start` with `set` — env vars don't propagate.
+**NEVER** kill the app before connecting — connect to what's already running.
+
+### Kill the App (CRITICAL)
+
+When the app freezes or before `cargo build` to release the binary lock:
+
+```bash
+# Method 1: Escape slashes for Git Bash (preferred)
+taskkill //F //IM filebitch.exe
+
+# Method 2: Wrap in cmd /c
+cmd /c taskkill /F /IM filebitch.exe
+```
+
+**Why `//` in Git Bash?** Git Bash interprets single `/FLAG` as a relative path. Double `//` escapes to a single `/` for the Windows command.
+
+**DO NOT** try to close via Chrome DevTools MCP — the close button is outside the WebView.
+**DO NOT** try `window.__TAURI__.window.getCurrentWindow().close()` — won't work if frozen.
+
 ### Windows File-Lock Gotcha
 
 `cargo test` fails with "access denied" if `filebitch.exe` is running. **Run `cargo test` BEFORE `tauri dev`, not after.** The E2E script handles its own process cleanup.
 
 ### Windows Shell Gotcha
 
-The Bash tool is **Git Bash** (POSIX sh) — it interprets `/FLAG` as a relative path. For Windows commands with `/FLAG` syntax, wrap in `cmd /c`:
+The Bash tool is **Git Bash** (POSIX sh) — it interprets `/FLAG` as a relative path. Two options:
 
 ```bash
-# WRONG — Git Bash treats /PID as a path
-taskkill /PID 1234 /F /T
+# Option 1: Escape slashes
+taskkill //F //IM filebitch.exe
 
-# RIGHT — runs via cmd.exe
-cmd /c taskkill /PID 1234 /F /T
+# Option 2: Wrap in cmd /c
+cmd /c taskkill /F /IM filebitch.exe
 ```
-
-To find the PID on CDP port 9222: `netstat -ano | findstr "9222"`
 
 **E2E teardown:** The E2E script uses `taskkill /F /IM filebitch.exe` (image name, not PID) for cleanup. Never track dynamic PIDs — kill by image name.
 

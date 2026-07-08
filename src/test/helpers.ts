@@ -1,5 +1,20 @@
 import { vi } from 'vitest';
 
+// ─── rAF Mock ───
+// In tests, rAF callbacks run synchronously so batched events flush immediately.
+// Uses a synchronous queue — flushRaf() drains it.
+const rafQueue: FrameRequestCallback[] = [];
+
+if (typeof window !== 'undefined') {
+    (window as any).requestAnimationFrame = (cb: FrameRequestCallback) => {
+        rafQueue.push(cb);
+        return rafQueue.length; // return a "handle"
+    };
+    (window as any).cancelAnimationFrame = (id: number) => {
+        rafQueue[id - 1] = () => {}; // no-op
+    };
+}
+
 // ─── Types ───
 
 export interface TauriMockInvoke {
@@ -96,6 +111,7 @@ export function createDom() {
       <div id="statusbar">
         <span id="status-info">Ready</span>
         <span id="status-path"></span>
+        <span id="perf-overlay"></span>
       </div>
     </div>
   `;
@@ -106,6 +122,22 @@ export function createDom() {
 export async function flushPromises() {
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
+}
+
+/// Flush pending rAF callbacks (used by event batching).
+/// Drains the synchronous rAF queue, then flushes promises for any async work.
+export async function flushRaf() {
+  // Drain the rAF queue synchronously (may schedule more rAF callbacks)
+  let i = 0;
+  while (i < rafQueue.length) {
+    const cb = rafQueue[i];
+    if (cb) cb(0); // call with fake timestamp
+    i++;
+  }
+  rafQueue.length = 0; // clear
+
+  // Flush any promises from the callbacks
+  await flushPromises();
 }
 
 export function emitEvent(eventName: string, payload: any) {
