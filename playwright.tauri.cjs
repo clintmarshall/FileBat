@@ -67,9 +67,28 @@ function launchApp() {
 async function connectBrowser() {
 	console.log(`Waiting for CDP on port ${PORT}...`);
 	await waitForCdp(PORT);
-	console.log('CDP is ready, connecting Playwright...');
+	console.log('CDP HTTP is ready, connecting Playwright...');
 
-	const browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
+	// WebView2's HTTP endpoint comes up before the WebSocket is ready.
+	// Retry the actual CDP connection instead of hoping a timeout is enough.
+	let browser;
+	const start = Date.now();
+	const timeout = 30000;
+	while (Date.now() - start < timeout) {
+		try {
+			browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
+			break;
+		} catch (e) {
+			console.log(`  CDP not ready yet (${Date.now() - start}ms), retrying...`);
+			await new Promise(r => setTimeout(r, 500));
+		}
+	}
+
+	if (!browser) {
+		console.error(`CDP connection failed after ${timeout}ms`);
+		process.exit(1);
+	}
+
 	const defaultContext = browser.contexts()[0];
 	const page = defaultContext.pages()[0];
 
@@ -260,6 +279,10 @@ async function testDiskUsageScan(page, consoleMessages) {
 		await page.waitForSelector('#analytics-summary', { state: 'visible', timeout: 120000 });
 		console.log('  ✓ PASS: Scan completed');
 
+		// Wait for tree children to render (single-pass scans complete fast)
+		await page.waitForTimeout(3000);
+
+		// Wait for tree children to render (single-pass scans complete fast)
 		const resultRows = await page.locator('#usage-results .usage-tree-row').count();
 		console.log(`  ✓ Usage results: ${resultRows} folders in tree`);
 

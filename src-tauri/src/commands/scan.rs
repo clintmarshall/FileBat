@@ -39,7 +39,11 @@ pub fn get_scan_tree_children(
     parent_id: u32,
     analytics: tauri::State<'_, AnalyticsState>,
 ) -> Vec<ScanTreeChild> {
-    analytics.get_children(&scan_id, NodeId(parent_id)).unwrap_or_default()
+    let result = analytics.get_children(&scan_id, NodeId(parent_id)).unwrap_or_default();
+    if parent_id == 0 {
+        println!("[DEBUG] get_scan_tree_children root: scan_id={}, result_len={}", scan_id, result.len());
+    }
+    result
 }
 
 // ─── Large Files ───

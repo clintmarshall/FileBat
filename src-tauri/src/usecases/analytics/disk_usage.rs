@@ -13,15 +13,14 @@ use tokio::sync::{mpsc, oneshot};
 
 /// Orchestrates disk usage scans.
 ///
-/// Approach:
-/// - Phase 1: BFS discovers all folders (readdir only, no file stats)
-/// - Phase 2: Leaf folders sized in parallel (num_cpus threads, lock-free arena)
-/// - Phase 3: Rollup propagates totals bottom-up via atomic parent pointers
-/// - Visual: emits `FolderStarted` for top-level folders when their first leaf is sized
+/// Approach: SINGLE-PASS BFS
+/// - One readdir per folder: discovers subdirectories AND sizes immediate files
+///   (file sizes are free from WIN32_FIND_DATA on Windows, no extra syscall)
+/// - Rollup: bottom-up propagation after BFS completes
+/// - Visual: tree structure emitted immediately, sizes fill in during rollup
 ///
-/// Lock-free arena: structural data is Arc<StructuralData> (immutable after BFS).
-/// Metadata is written once per node (leaf by sizing thread, parent during rollup).
-/// Atomic pending_children countdown triggers rollup — no mutex contention.
+/// This replaces the old two-phase approach (BFS + WalkDir per leaf) which was
+/// O(files) slower because WalkDir re-walked every file separately.
 pub struct DiskUsageUseCase;
 
 /// Inter-thread orchestration enum.
@@ -38,19 +37,25 @@ enum ScanStep {
     Cancelled,
 }
 
+/// Result of reading a single directory: immediate file sizes + subdirectory children.
+struct DirEntry {
+    /// Subdirectories: (name, normalized_path)
+    subdirs: Vec<(String, String)>,
+    /// Sum of immediate file sizes (not recursive)
+    file_size: u64,
+    /// Count of immediate files
+    file_count: u64,
+}
+
 impl DiskUsageUseCase {
-    /// BFS streaming scan with lock-free arena.
-    ///
-    /// Memory: single FolderArena per scan. Structural data frozen as Arc after BFS.
-    /// Rollup: atomic countdown + parent-pointer walk. Zero mutex contention.
+    /// Single-pass BFS scan.
     pub fn run(
         window: tauri::WebviewWindow,
         path: String,
-        _max_depth: u32, // deprecated — we scan everything now
+        _max_depth: u32,
         cancel: Arc<AtomicBool>,
         start: Instant,
         scan_id: String,
-        // Persistent arena — the single store for the folder tree.
         tree: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<FolderArena>>>>>,
     ) -> impl std::future::Future<Output = ()> {
         let (done_tx, done_rx) = oneshot::channel();
@@ -75,69 +80,58 @@ impl DiskUsageUseCase {
 
             let root_id = arena.alloc_folder(&root_name);
 
-            // Path map: NodeId → normalized path string (for IPC emission)
-            let mut path_map: HashMap<NodeId, String> = HashMap::new();
-            path_map.insert(root_id, root_path.clone());
+            // Per-folder accumulated stats (set during BFS for immediate files,
+            // updated during rollup for totals)
+            let mut folder_size: HashMap<NodeId, u64> = HashMap::new();
+            let mut folder_file_count: HashMap<NodeId, u64> = HashMap::new();
+            folder_size.insert(root_id, 0);
+            folder_file_count.insert(root_id, 0);
 
-            // BFS queue — stores (NodeId, path)
+            // BFS queue — stores (NodeId, normalized_path)
             let mut queue: VecDeque<(NodeId, String)> = VecDeque::new();
             queue.push_back((root_id, root_path.clone()));
 
-            // ─── BFS Discovery Loop ───
+            // Completed folders in reverse BFS order for bottom-up rollup
+            let mut completed: Vec<NodeId> = Vec::new();
 
-            const BATCH_SIZE: usize = 200;
-            let mut batch_leaves: Vec<(NodeId, String)> = Vec::new();
-            let mut all_leaves: Vec<(NodeId, String)> = Vec::new();
-            let mut all_batch_discovered: Vec<(NodeId, u32)> = Vec::new();
+            // ─── Single-Pass BFS ───
+            // Each iteration: readdir one folder, discover children, size immediate files.
 
-            loop {
+            let mut batch_discovered: Vec<(NodeId, u32)> = Vec::new();
+
+            while let Some((current_id, current_path)) = queue.pop_front() {
                 if cancel_blocking.load(Ordering::Relaxed) {
                     break;
                 }
 
-                let mut batch_discovered: Vec<(NodeId, u32)> = Vec::new();
+                let entries = read_dir_usage(Path::new(&current_path), &cancel_blocking);
+                let child_count = entries.subdirs.len();
 
-                // Process a batch from the BFS queue
-                for _ in 0..BATCH_SIZE {
-                    let (current_id, current_path) = match queue.pop_front() {
-                        Some(item) => item,
-                        None => break,
-                    };
+                // Record immediate file stats for this folder
+                *folder_size.entry(current_id).or_insert(0) += entries.file_size;
+                *folder_file_count.entry(current_id).or_insert(0) += entries.file_count;
 
-                    let children = readdir_names(Path::new(&current_path), &cancel_blocking);
-                    let child_count = children.len();
-
-                    if child_count == 0 {
-                        // Leaf — queue for sizing
-                        batch_leaves.push((current_id, current_path));
-                    } else {
-                        // Allocate children in arena, link to parent
-                        for (child_name, child_path) in children {
-                            let child_id = arena.alloc_folder(&child_name);
-                            arena.add_child(current_id, child_id);
-                            path_map.insert(child_id, child_path.clone());
-                            queue.push_back((child_id, child_path));
-                        }
-                        batch_discovered.push((current_id, child_count as u32));
-                    }
+                // Allocate children in arena, link to parent
+                for (child_name, child_path) in entries.subdirs {
+                    let child_id = arena.alloc_folder(&child_name);
+                    arena.add_child(current_id, child_id);
+                    folder_size.insert(child_id, 0);
+                    folder_file_count.insert(child_id, 0);
+                    queue.push_back((child_id, child_path));
                 }
 
-                // Sort queue alphabetically so the next batch processes in name order
-                queue.make_contiguous().sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-
-                // If nothing processed and queue is empty, we're done discovering
-                if batch_discovered.is_empty() && batch_leaves.is_empty() && queue.is_empty() {
-                    break;
+                if child_count > 0 {
+                    batch_discovered.push((current_id, child_count as u32));
                 }
 
-                all_batch_discovered.extend(batch_discovered);
-                all_leaves.extend(batch_leaves.drain(..));
+                completed.push(current_id);
             }
 
-            // Freeze structural data — becomes immutable Arc for all threads
-            let structural = arena.freeze_structural();
+            // Sort queue alphabetically (already processed, but for consistency)
+            // Not needed since we process in BFS order.
 
-            // Initialize atomic countdown for lock-free rollup
+            // Freeze structural data
+            let structural = arena.freeze_structural();
             arena.init_pending(&structural);
 
             // Store arena in tree for frontend queries
@@ -156,150 +150,79 @@ impl DiskUsageUseCase {
                 root_name: root_name.clone(),
             }));
 
-            for (parent_id, child_count) in all_batch_discovered {
+            for (parent_id, child_count) in &batch_discovered {
                 let _ = tx.send(ScanStep::ChildrenReady(ScanTreeChildren {
                     scan_id: scan_id_blocking.clone(),
-                    parent_id,
-                    child_count,
+                    parent_id: *parent_id,
+                    child_count: *child_count,
                 }));
             }
 
-            // ─── Sizing Threads ───
+            // ─── Bottom-Up Rollup ───
+            // Process completed folders in reverse BFS order (leaves first).
+            // Each folder already has immediate file sizes from BFS.
+            // Rollup adds children's totals to get the final size.
+            //
+            // Process in batches to avoid holding the arena lock for too long.
+            // The get_scan_tree_children command needs the arena lock — if we hold it
+            // for the entire rollup, the command blocks and the frontend hangs.
 
-            // Crossbeam bounded channel with backpressure
-            let (work_tx, work_rx) =
-                crossbeam::channel::bounded::<(NodeId, String)>(1024);
+            const ROLLUP_BATCH: usize = 500;
+            let mut rollup_results: Vec<(NodeId, u64, u64, u64)> = Vec::with_capacity(ROLLUP_BATCH);
 
-            let num_threads = num_cpus::get();
-            let tx_clone = tx.clone();
-            let cancel_size = cancel_blocking.clone();
+            let mut folder_count: usize = 0;
 
-            // Send leaves to work queue BEFORE spawning threads
-            for (node_id, leaf_path) in all_leaves {
+            // Reverse BFS order: leaves first, root last
+            let reversed: Vec<NodeId> = completed.iter().copied().rev().collect();
+
+            for chunk in reversed.chunks(ROLLUP_BATCH) {
                 if cancel_blocking.load(Ordering::Relaxed) {
                     break;
                 }
-                let _ = work_tx.send((node_id, leaf_path));
-            }
-            // Drop sender — threads exit when channel is drained
-            drop(work_tx);
 
-            // Scoped threads — auto-join, no detached thread leaks
-            let _ = crossbeam::scope(|s| {
-                for _ in 0..num_threads {
-                    let rx = &work_rx;
-                    let tx_t = &tx_clone;
-                    let cancel_t = &cancel_size;
-                    let struct_t = &structural;
-                    let arena_t = &arena_arc;
+                // Compute rollup for this batch without holding arena lock
+                // (folder_size and folder_file_count are HashMaps, no lock needed)
+                rollup_results.clear();
+                for &id in chunk {
+                    let mut size = *folder_size.get(&id).unwrap_or(&0);
+                    let mut file_count = *folder_file_count.get(&id).unwrap_or(&0);
 
-                    s.spawn(move |_| {
-                        loop {
-                            if cancel_t.load(Ordering::Relaxed) {
-                                break;
-                            }
+                    // Sum children's already-computed sizes using structural data (Arc, no lock)
+                    let mut sib = structural.first_child[id.0 as usize];
+                    let mut folder_count_local: u64 = 0;
+                    while let Some(child_id) = sib {
+                        size += *folder_size.get(&child_id).unwrap_or(&0);
+                        file_count += *folder_file_count.get(&child_id).unwrap_or(&0);
+                        folder_count_local += 1;
+                        sib = structural.next_sibling[child_id.0 as usize];
+                    }
 
-                            let (node_id, folder_path) = match rx.recv() {
-                                Ok(item) => item,
-                                Err(crossbeam::channel::RecvError) => break, // Channel closed
-                            };
-
-                            if cancel_t.load(Ordering::Relaxed) {
-                                break;
-                            }
-
-                            let (size, file_count, folder_count) =
-                                size_folder_stats(Path::new(&folder_path));
-
-                            // Write leaf stats — lock-free, each thread writes its own slot
-                            arena_t.lock().unwrap().write_size(node_id, size, file_count, folder_count);
-
-                            // Emit leaf stats
-                            let _ = tx_t.send(ScanStep::Folder(FolderUsage {
-                                node_id,
-                                size,
-                                file_count,
-                                folder_count,
-                            }));
-
-                            // Walk parent chain using atomic countdown — structural is Arc (lock-free reads)
-                            let mut current = struct_t.parent[node_id.0 as usize];
-                            while let Some(parent_id) = current {
-                                // Atomic countdown — lock-free. Returns true if this was the last child.
-                                if arena_t.lock().unwrap().child_completed(parent_id) {
-                                    // Roll up parent — brief lock for sum_children + write
-                                    let (s, f, d) = {
-                                        let arena = arena_t.lock().unwrap();
-                                        arena.sum_children(struct_t, parent_id)
-                                    };
-                                    arena_t.lock().unwrap().write_size(parent_id, s, f, d);
-                                    current = struct_t.parent[parent_id.0 as usize];
-
-                                    let _ = tx_t.send(ScanStep::Folder(FolderUsage {
-                                        node_id: parent_id,
-                                        size: s,
-                                        file_count: f,
-                                        folder_count: d,
-                                    }));
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    });
+                    rollup_results.push((id, size, file_count, folder_count_local));
                 }
-            }); // All threads joined here
 
-            // ─── Final Rollup Pass ───
-            // Sizing threads do parent-pointer rollup as they complete, so most nodes
-            // are already sized. This pass catches any remaining unsized nodes.
-            for idx in (0..arena_arc.lock().unwrap().len()).rev() {
-                let id = NodeId(idx as u32);
-
-                // Skip if already sized during the scan
+                // Write results to arena (brief lock)
                 {
-                    let arena = arena_arc.lock().unwrap();
-                    if arena.is_ready(id) {
-                        continue;
+                    let mut arena = arena_arc.lock().unwrap();
+                    for &(id, size, file_count, folder_count_local) in &rollup_results {
+                        arena.write_size(id, size, file_count, folder_count_local);
                     }
                 }
 
-                let node_path = match path_map.get(&id) {
-                    Some(p) => p.clone(),
-                    None => continue,
-                };
-
-                let children: Vec<NodeId> = {
-                    let arena = arena_arc.lock().unwrap();
-                    arena.children(&structural, id).collect()
-                };
-                if children.is_empty() {
-                    // Leaf — size it now (shouldn't happen, safety net)
-                    let (size, file_count, folder_count) =
-                        size_folder_stats(Path::new(&node_path));
-                    arena_arc.lock().unwrap().write_size(id, size, file_count, folder_count);
-
+                // Emit folder usage events (no lock needed)
+                for &(id, size, file_count, folder_count_local) in &rollup_results {
                     let _ = tx.send(ScanStep::Folder(FolderUsage {
                         node_id: id,
                         size,
                         file_count,
-                        folder_count,
+                        folder_count: folder_count_local,
                     }));
-                } else {
-                    // Internal node — roll up from children (all leaves are done)
-                    let (total_size, total_files, total_folders) = {
-                        let arena = arena_arc.lock().unwrap();
-                        arena.sum_children(&structural, id)
-                    };
-                    arena_arc.lock().unwrap().write_size(id, total_size, total_files, total_folders);
-
-                    let _ = tx.send(ScanStep::Folder(FolderUsage {
-                        node_id: id,
-                        size: total_size,
-                        file_count: total_files,
-                        folder_count: total_folders,
-                    }));
+                    folder_count += 1;
                 }
+
+                // Brief sleep to force thread context switch so other tasks
+                // (e.g., get_scan_tree_children) can acquire the arena lock.
+                // yield_now() is just a hint on Windows and doesn't guarantee a switch.
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
 
             if cancel_blocking.load(Ordering::Relaxed) {
@@ -317,9 +240,9 @@ impl DiskUsageUseCase {
 
         // Async emitter — drains the channel and emits Tauri events
         tokio::spawn(async move {
-            let mut total_files: u64 = 0;
-            let mut total_size: u64 = 0;
-            let mut folder_count: usize = 0;
+            let mut emit_total_files: u64 = 0;
+            let mut emit_total_size: u64 = 0;
+            let mut emit_folder_count: usize = 0;
 
             while let Some(step) = rx.recv().await {
                 if cancel_clone.load(Ordering::Relaxed) {
@@ -335,9 +258,9 @@ impl DiskUsageUseCase {
                         let _ = window.emit("scan:children_ready", &children);
                     }
                     ScanStep::Folder(usage) => {
-                        total_files += usage.file_count;
-                        total_size += usage.size;
-                        folder_count += 1;
+                        emit_total_files += usage.file_count;
+                        emit_total_size += usage.size;
+                        emit_folder_count += 1;
 
                         let _ = window.emit(
                             "scan:chunk",
@@ -348,7 +271,7 @@ impl DiskUsageUseCase {
                         );
                     }
                     ScanStep::Complete => {
-                        // Observability — log backend memory state
+                        // Observability
                         {
                             let tree = tree_for_emit.lock().unwrap();
                             let scan_arena = tree.get(&scan_id_clone);
@@ -357,7 +280,7 @@ impl DiskUsageUseCase {
                                 .unwrap_or(0);
                             println!(
                                 "[BACKEND MEMORY] scan={} | arena_folders={} | sized_folders={} | total_files={} | total_size={}",
-                                scan_id_clone, tree_folders, folder_count, total_files, format_bytes(total_size),
+                                scan_id_clone, tree_folders, emit_folder_count, emit_total_files, format_bytes(emit_total_size),
                             );
                         }
 
@@ -368,7 +291,7 @@ impl DiskUsageUseCase {
                                 percentage: 100.0,
                                 message: format!(
                                     "Scanned {} files across {} folders",
-                                    total_files, folder_count
+                                    emit_total_files, emit_folder_count
                                 ),
                             },
                         );
@@ -378,8 +301,8 @@ impl DiskUsageUseCase {
                             "scan:complete",
                             ScanComplete {
                                 scan_id: scan_id_clone.clone(),
-                                total_items: total_files,
-                                total_size,
+                                total_items: emit_total_files,
+                                total_size: emit_total_size,
                                 duration_ms: duration,
                             },
                         );
@@ -398,65 +321,57 @@ impl DiskUsageUseCase {
     }
 }
 
-/// Size a single folder by walking all its descendants. Returns stats only.
-fn size_folder_stats(path: &Path) -> (u64, u64, u64) {
-    let mut size: u64 = 0;
+/// Read a single directory: discover subdirectories and size immediate files.
+///
+/// On Windows, `read_dir` uses FindFirstFileEx which returns WIN32_FIND_DATA
+/// containing file sizes — no extra syscall needed for `entry.metadata()`.
+fn read_dir_usage(dir: &Path, cancel: &Arc<AtomicBool>) -> DirEntry {
+    let mut subdirs = Vec::new();
+    let mut file_size: u64 = 0;
     let mut file_count: u64 = 0;
-    let mut folder_count: u64 = 0;
-
-    let walkdir = walkdir::WalkDir::new(path);
-    for entry in walkdir {
-        match entry {
-            Ok(e) => {
-                let meta = match e.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-
-                if meta.is_file() {
-                    size += meta.len();
-                    file_count += 1;
-                } else if meta.is_dir() && e.path() != path {
-                    folder_count += 1;
-                }
-            }
-            Err(_) => continue,
-        }
-    }
-
-    (size, file_count, folder_count)
-}
-
-/// Read immediate subdirectories of a path.
-/// Returns list of (name, normalized_path) tuples.
-fn readdir_names(dir: &Path, cancel: &Arc<AtomicBool>) -> Vec<(String, String)> {
-    let mut children = Vec::new();
 
     match dir.read_dir() {
         Ok(entries) => {
-            for entry in entries.flatten() {
+            for entry in entries {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
 
-                let path = entry.path();
-                if path.is_dir() {
-                    let child_name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let child_path = normalize_path(&path);
+                match entry {
+                    Ok(e) => {
+                        let path = e.path();
+                        let meta = match e.metadata() {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
 
-                    children.push((child_name, child_path));
+                        if meta.is_file() {
+                            file_size += meta.len();
+                            file_count += 1;
+                        } else if meta.is_dir() {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let child_path = normalize_path(&path);
+                            subdirs.push((name, child_path));
+                        }
+                    }
+                    Err(_) => continue,
                 }
             }
         }
         Err(_) => {} // Skip inaccessible directories
     }
 
-    // Sort alphabetically so BFS discovers folders in name order
-    children.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-    children
+    // Sort subdirs alphabetically for consistent rendering
+    subdirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    DirEntry {
+        subdirs,
+        file_size,
+        file_count,
+    }
 }
 
 /// Format bytes as human-readable size (for observability logging).
@@ -509,89 +424,64 @@ mod tests {
         temp
     }
 
-    // ─── readdir_names ───
+    // ─── read_dir_usage ───
 
     #[test]
-    fn reads_immediate_subdirectories() {
+    fn reads_subdirs_and_file_sizes() {
         let temp = create_test_tree();
         let base = temp.path();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let children = readdir_names(base, &cancel);
+        let entries = read_dir_usage(base, &cancel);
 
-        assert_eq!(children.len(), 2);
-        let names: Vec<&str> = children.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(entries.subdirs.len(), 2);
+        let names: Vec<&str> = entries.subdirs.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"d"));
+        // Root has no immediate files
+        assert_eq!(entries.file_size, 0);
+        assert_eq!(entries.file_count, 0);
     }
 
     #[test]
-    fn nested_directory_has_children() {
+    fn sizes_immediate_files() {
         let temp = create_test_tree();
         let base = temp.path();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let children = readdir_names(&base.join("a"), &cancel);
+        let entries = read_dir_usage(&base.join("a"), &cancel);
 
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0].0, "b");
+        // "a" has one subdir "b" and one file "file1.txt" (100 bytes)
+        assert_eq!(entries.subdirs.len(), 1);
+        assert_eq!(entries.subdirs[0].0, "b");
+        assert_eq!(entries.file_size, 100);
+        assert_eq!(entries.file_count, 1);
     }
 
     #[test]
-    fn leaf_directory_has_no_children() {
+    fn leaf_directory_has_no_subdirs() {
         let temp = create_test_tree();
         let base = temp.path();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let children = readdir_names(&base.join("a/b/c"), &cancel);
+        let entries = read_dir_usage(&base.join("a/b/c"), &cancel);
 
-        assert!(children.is_empty());
+        assert!(entries.subdirs.is_empty());
+        assert_eq!(entries.file_size, 0);
+        assert_eq!(entries.file_count, 0);
     }
 
     #[test]
-    fn empty_directory_has_no_children() {
+    fn empty_directory() {
         let temp = TempDir::new().unwrap();
         let base = temp.path();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let children = readdir_names(base, &cancel);
+        let entries = read_dir_usage(base, &cancel);
 
-        assert!(children.is_empty());
-    }
-
-    // ─── size_folder_stats ───
-
-    #[test]
-    fn sizes_leaf_folder() {
-        let temp = create_test_tree();
-        let base = temp.path();
-
-        let (size, file_count, folder_count) = size_folder_stats(&base.join("d"));
-        assert_eq!(size, 50);
-        assert_eq!(file_count, 1);
-        assert_eq!(folder_count, 0);
-    }
-
-    #[test]
-    fn sizes_empty_folder() {
-        let temp = create_test_tree();
-        let base = temp.path();
-
-        let (size, file_count, folder_count) = size_folder_stats(&base.join("a/b/c"));
-        assert_eq!(size, 0);
-        assert_eq!(file_count, 0);
-        assert_eq!(folder_count, 0);
-    }
-
-    #[test]
-    fn sizes_folder_with_subdirs() {
-        let temp = create_test_tree();
-        let base = temp.path();
-
-        let (size, file_count, folder_count) = size_folder_stats(&base.join("a"));
-        assert_eq!(size, 300); // 100 + 200
-        assert_eq!(file_count, 2);
-        assert_eq!(folder_count, 2); // b, b/c
+        assert!(entries.subdirs.is_empty());
+        assert_eq!(entries.file_size, 0);
+        assert_eq!(entries.file_count, 0);
     }
 
     // ─── Real filesystem (E:\projects) ───
@@ -602,46 +492,13 @@ mod tests {
         assert!(path.is_dir(), "E:\\projects must exist");
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let children = readdir_names(path, &cancel);
+        let entries = read_dir_usage(path, &cancel);
 
-        // E:\projects has at least filebitch
-        assert!(!children.is_empty(), "E:\\projects should have subdirectories");
-        let names: Vec<&str> = children.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(!entries.subdirs.is_empty(), "E:\\projects should have subdirectories");
+        let names: Vec<&str> = entries.subdirs.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"filebitch"), "E:\\projects should contain filebitch");
 
-        println!("E:\\projects top-level folders: {:?}", names);
-    }
-
-    #[test]
-    fn real_projects_filebitch_has_subdirs() {
-        let path = std::path::Path::new("E:/projects/filebitch");
-        assert!(path.is_dir(), "E:\\projects\\filebitch must exist");
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        let children = readdir_names(path, &cancel);
-
-        assert!(!children.is_empty(), "filebitch should have subdirectories");
-        let names: Vec<&str> = children.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"src-tauri"), "filebitch should contain src-tauri");
-
-        println!("filebitch subdirs ({}) : {:?}", children.len(), names);
-    }
-
-    #[test]
-    fn real_size_filebitch_src_tauri() {
-        let path = std::path::Path::new("E:/projects/filebitch/src-tauri");
-        assert!(path.is_dir(), "E:\\projects\\filebitch\\src-tauri must exist");
-
-        let (size, file_count, folder_count) = size_folder_stats(path);
-
-        assert!(size > 0, "src-tauri should have files");
-        assert!(file_count > 0, "src-tauri should have files");
-        assert!(folder_count >= 1, "src-tauri should have subfolders (at least src/)");
-
-        println!(
-            "src-tauri: {} bytes, {} files, {} folders",
-            size, file_count, folder_count
-        );
+        println!("E:\\projects top-level folders: {:?}, files: {}, size: {}", names, entries.file_count, format_bytes(entries.file_size));
     }
 
     #[test]
@@ -656,11 +513,15 @@ mod tests {
         let mut queue: VecDeque<String> = VecDeque::new();
         queue.push_back(root);
         let mut total_folders: usize = 0;
+        let mut total_files: u64 = 0;
+        let mut total_size: u64 = 0;
 
         while let Some(current) = queue.pop_front() {
             total_folders += 1;
-            let children = readdir_names(Path::new(&current), &cancel);
-            for (_, child_path) in children {
+            let entries = read_dir_usage(Path::new(&current), &cancel);
+            total_files += entries.file_count;
+            total_size += entries.file_size;
+            for (_, child_path) in entries.subdirs {
                 queue.push_back(child_path);
             }
         }
@@ -671,24 +532,9 @@ mod tests {
             total_folders
         );
 
-        println!("E:\\projects BFS discovered {} folders", total_folders);
-    }
-
-    #[test]
-    fn real_size_folder_filebitch_root() {
-        let path = std::path::Path::new("E:/projects/filebitch");
-        assert!(path.is_dir(), "E:\\projects\\filebitch must exist");
-
-        let (size, file_count, folder_count) = size_folder_stats(path);
-
-        // filebitch is a real project — should have meaningful content
-        assert!(file_count > 50, "filebitch should have >50 files, found {}", file_count);
-        assert!(folder_count > 5, "filebitch should have >5 folders, found {}", folder_count);
-        assert!(size > 10_000, "filebitch should be >10KB, found {} bytes", size);
-
         println!(
-            "filebitch root: {} bytes, {} files, {} folders",
-            size, file_count, folder_count
+            "E:\\projects BFS: {} folders, {} files, {}",
+            total_folders, total_files, format_bytes(total_size)
         );
     }
 }

@@ -25,6 +25,8 @@ desktop.ini
 .claude/
 .playwright-mcp/
 .fallow/
+context_state.json
+context_state.json.tmp
 
 # Screenshots / e2e artifacts
 *-e2e-screenshot.png

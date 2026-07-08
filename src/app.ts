@@ -1147,9 +1147,15 @@ function setupScanListeners() {
         // If the parent is expanded and children aren't loaded yet, fetch them
         // Auto-expand so more rows exist for incoming stats to land on.
         const node = treeStore.get(data.parentId);
-        if (expandedPaths.has(data.parentId) && (!node || !node.children)) {
+        const isExpanded = expandedPaths.has(data.parentId);
+        const needsFetch = !node || !node.children;
+        if (data.parentId === 0) {
+            console.log('[DEBUG] children_ready root: expanded=', isExpanded, 'node=', node, 'needsFetch=', needsFetch, 'childCount=', data.childCount);
+        }
+        if (isExpanded && needsFetch) {
             const row = document.querySelector(`.usage-tree-row[data-node-id="${data.parentId}"]`);
             const depth = getDepthFromRow(row);
+            if (data.parentId === 0) console.log('[DEBUG] fetchAndRenderChildren root, row=', !!row, 'depth=', depth);
             fetchAndRenderChildren(data.parentId, depth, true);
         }
     }).catch(err => console.error('Failed to register scan:children_ready listener:', err));
@@ -1162,9 +1168,14 @@ function setupScanListeners() {
     }).catch(err => console.error('Failed to register scan:progress listener:', err));
 
     // Phase 2: Chunk — buffer stats for batched DOM update
+    let _chunkDebugCount = 0;
     listen('scan:chunk', (event) => {
         const chunk = event.payload as any;
         const data = chunk.data;
+
+        if (++_chunkDebugCount === 1) {
+            console.log('[DEBUG] first chunk payload:', JSON.stringify(chunk).substring(0, 300));
+        }
 
         if (data.type === 'folder_usage') {
             // usage.nodeId is a number (NodeId serializes as u32)
@@ -1429,15 +1440,20 @@ function getDepthFromRow(row: HTMLElement | null): number {
 /// If autoExpand is true (called during scan), also expand each child one level deeper
 /// so more rows exist for incoming stats to land on.
 async function fetchAndRenderChildren(parentId: number, depth: number, autoExpand = false) {
-    if (!activeScanId) return;
+    if (!activeScanId) {
+        if (parentId === 0) console.log('[DEBUG] fetchAndRenderChildren: no activeScanId');
+        return;
+    }
 
     try {
+        if (parentId === 0) console.log('[DEBUG] fetchAndRenderChildren root: invoking, scanId=', activeScanId);
         const children: Array<{ id: number; name: string; path?: string }> =
             await invoke('get_scan_tree_children', {
                 scanId: activeScanId,
                 parentId,
             });
 
+        if (parentId === 0) console.log('[DEBUG] fetchAndRenderChildren root: got', children.length, 'children');
         if (children.length === 0) return;
 
         // Store path info for each child

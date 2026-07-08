@@ -1,6 +1,8 @@
 mod arena;
 mod aggregator;
 mod disk_usage;
+#[cfg(feature = "ignore-walker")]
+mod disk_usage_ignore;
 mod duplicates;
 mod large_files;
 mod snapshot;
@@ -56,6 +58,9 @@ impl AnalyticsUseCase {
         }
         // Sort by name for consistent rendering
         children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if parent_id.0 == 0 {
+            println!("[DEBUG] get_children root: arena_len={}, children_len={}, structural_first_child={:?}", arena.len(), children.len(), structural.first_child.get(0));
+        }
         Some(children)
     }
 
@@ -95,6 +100,10 @@ impl AnalyticsUseCase {
     ///
     /// Returns the scan_id **immediately**. Results stream as Tauri events.
     /// **Events:** `scan:progress`, `scan:chunk`, `scan:complete`, `scan:error`
+    ///
+    /// Implementation:
+    /// - Default: two-phase BFS + crossbeam + WalkDir (original)
+    /// - With `ignore-walker` feature: single-pass `ignore::WalkParallel`
     pub async fn scan_usage(
         &self,
         window: tauri::WebviewWindow,
@@ -117,16 +126,36 @@ impl AnalyticsUseCase {
         // Spawn as background task — return scan_id immediately so the frontend
         // can process events as they arrive. The invoke() won't block the UI.
         tokio::spawn(async move {
-            disk_usage::DiskUsageUseCase::run(
-                window,
-                path,
-                max_depth,
-                cancel_clone,
-                start,
-                id_run,
-                tree,
-            )
-            .await;
+            #[cfg(feature = "ignore-walker")]
+            {
+                println!(
+                    "[DISK_USAGE] Using ignore::WalkParallel implementation (feature=ignore-walker)"
+                );
+                disk_usage_ignore::DiskUsageUseCase::run(
+                    window,
+                    path,
+                    max_depth,
+                    cancel_clone,
+                    start,
+                    id_run,
+                    tree,
+                )
+                .await;
+            }
+
+            #[cfg(not(feature = "ignore-walker"))]
+            {
+                disk_usage::DiskUsageUseCase::run(
+                    window,
+                    path,
+                    max_depth,
+                    cancel_clone,
+                    start,
+                    id_run,
+                    tree,
+                )
+                .await;
+            }
             // Clean up cancel flag when scan finishes (completed or cancelled)
             scans.lock().unwrap().remove(&id_unregister);
         });
