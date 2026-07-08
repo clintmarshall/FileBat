@@ -207,14 +207,22 @@ impl DiskUsageUseCase {
             );
 
             let mut final_arena = arena;
-            let _structural = final_arena.freeze_structural();
+            final_arena.freeze_structural();
 
             // Store arena for frontend queries
-            let arena_arc = Arc::new(std::sync::Mutex::new(final_arena));
+            let arena_for_tree = Arc::new(std::sync::Mutex::new(final_arena));
             {
                 let mut tree_map = tree_blocking.lock().unwrap();
-                tree_map.insert(scan_id_blocking.clone(), arena_arc.clone());
+                tree_map.insert(scan_id_blocking.clone(), arena_for_tree.clone());
             }
+
+            // Get a clone of the structural Arc for the rollup phase.
+            // Clone the Arc (cheap refcount bump) so we don't hold the Mutex during rollup.
+            let structural = {
+                let guard = arena_for_tree.lock().unwrap();
+                let arc = guard.structural_ref().unwrap();
+                arc.clone()
+            };
 
             // Emit started event
             let _ = tx.send(ScanStep::Started(ScanTreeStarted {
@@ -244,17 +252,60 @@ impl DiskUsageUseCase {
             // and fetch children via get_scan_tree_children before folder_usage arrives.
             std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // Emit folder usage for all discovered folders
-            for (_path, (node_id, accum)) in folders_map.iter() {
-                let size = accum.size.load(Ordering::SeqCst);
-                let file_count = accum.file_count.load(Ordering::SeqCst);
-                let folder_count_val = accum.folder_count.load(Ordering::SeqCst);
+            // Bottom-up rollup: propagate children's stats to parents.
+            // The accumulators only have immediate files from the walk.
+            // We need to sum children's totals to get the final size per folder.
+            //
+            // Use the arena's structural data (first-child/next-sibling) for a proper
+            // bottom-up traversal via iterative DFS post-order.
 
+            let mut rolled_size: HashMap<NodeId, u64> = HashMap::new();
+            let mut rolled_files: HashMap<NodeId, u64> = HashMap::new();
+            let mut rolled_folders: HashMap<NodeId, u64> = HashMap::new();
+
+            // Initialize with immediate values from the walk
+            for (_path, (node_id, accum)) in folders_map.iter() {
+                rolled_size.insert(*node_id, accum.size.load(Ordering::SeqCst));
+                rolled_files.insert(*node_id, accum.file_count.load(Ordering::SeqCst));
+                rolled_folders.insert(*node_id, 0);
+            }
+
+            // Iterative post-order DFS: process children before parents.
+            // Use two stacks: one for traversal order, one for post-order processing.
+            let mut traversal = vec![root_id];
+            let mut post_order = Vec::new();
+
+            while let Some(node_id) = traversal.pop() {
+                post_order.push(node_id);
+                // Push children in reverse order so they're processed left-to-right
+                let mut child = structural.first_child[node_id.0 as usize];
+                while let Some(c) = child {
+                    traversal.push(c);
+                    child = structural.next_sibling[c.0 as usize];
+                }
+            }
+
+            // Process in reverse traversal order (children before parents)
+            for node_id in post_order.into_iter().rev() {
+                // Add this node's rolled-up stats to its parent
+                if let Some(&Some(parent_id)) = structural.parent.get(node_id.0 as usize) {
+                    let size = *rolled_size.get(&node_id).unwrap_or(&0);
+                    let files = *rolled_files.get(&node_id).unwrap_or(&0);
+                    let folders = *rolled_folders.get(&node_id).unwrap_or(&0);
+
+                    *rolled_size.entry(parent_id).or_insert(0) += size;
+                    *rolled_files.entry(parent_id).or_insert(0) += files;
+                    *rolled_folders.entry(parent_id).or_insert(0) += 1 + folders;
+                }
+            }
+
+            // Emit folder usage with rolled-up stats
+            for (_path, (node_id, _)) in folders_map.iter() {
                 let _ = tx.send(ScanStep::Folder(FolderUsage {
                     node_id: *node_id,
-                    size,
-                    file_count,
-                    folder_count: folder_count_val,
+                    size: *rolled_size.get(node_id).unwrap_or(&0),
+                    file_count: *rolled_files.get(node_id).unwrap_or(&0),
+                    folder_count: *rolled_folders.get(node_id).unwrap_or(&0),
                 }));
             }
 
