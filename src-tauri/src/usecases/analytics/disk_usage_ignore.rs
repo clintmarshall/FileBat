@@ -1,13 +1,7 @@
-//! Single-pass disk usage scan using the `ignore` crate.
+//! Single-pass disk usage scan using `jwalk` for parallel traversal.
 //!
-//! Replaces the two-phase BFS + crossbeam + WalkDir approach with
-//! `ignore::WalkParallel` — one parallel walk, metadata is free from readdir.
-//!
-//! Feature-gated behind `ignore-walker`. Toggle with:
-//! ```bash
-//! cargo run --features ignore-walker  # new implementation
-//! cargo run                           # original implementation
-//! ```
+//! `jwalk` uses Rayon internally for parallelism and doesn't filter files based on .gitignore,
+//! making it suitable for disk usage scanning where we need to see ALL files.
 
 use crate::domain::{
     FolderUsage, NodeId, ScanChunk, ScanChunkData, ScanComplete,
@@ -23,12 +17,9 @@ use tauri::Emitter;
 use tokio::sync::{mpsc, oneshot};
 
 /// Thread-safe folder accumulator.
-/// Files contribute size to their parent folder. Folders contribute to their parent.
-/// Atomic operations allow concurrent updates from multiple walker threads.
 struct FolderAccum {
     size: AtomicU64,
     file_count: AtomicU64,
-    folder_count: AtomicU64,
 }
 
 impl FolderAccum {
@@ -36,7 +27,6 @@ impl FolderAccum {
         Self {
             size: AtomicU64::new(0),
             file_count: AtomicU64::new(0),
-            folder_count: AtomicU64::new(0),
         }
     }
 }
@@ -45,15 +35,20 @@ enum ScanStep {
     Started(ScanTreeStarted),
     ChildrenReady(ScanTreeChildren),
     Folder(FolderUsage),
-    Complete,
+    Complete {
+        scan_id: String,
+        total_files: u64,
+        total_size: u64,
+        folder_count: usize,
+    },
     Cancelled,
 }
 
-/// Orchestrates disk usage scans using the ignore crate.
+/// Orchestrates disk usage scans using jwalk for parallel traversal.
 pub struct DiskUsageUseCase;
 
 impl DiskUsageUseCase {
-    /// Single-pass scan using `ignore::WalkParallel`.
+    /// Single-pass scan using `jwalk` parallel walker.
     pub async fn run(
         window: tauri::WebviewWindow,
         path: String,
@@ -86,7 +81,6 @@ impl DiskUsageUseCase {
             // Track folders: path -> (NodeId, Accumulator)
             let folders: Arc<std::sync::Mutex<HashMap<String, (NodeId, FolderAccum)>>> =
                 Arc::new(std::sync::Mutex::new(HashMap::new()));
-            let folders_ref = folders.clone();
 
             // Initialize root
             {
@@ -94,96 +88,111 @@ impl DiskUsageUseCase {
                 f.insert(root_path.clone(), (root_id, FolderAccum::new()));
             }
 
-            // Walk the tree in parallel using ignore crate
-            // The run method takes a factory that creates a closure for each worker thread.
-            // Each closure processes entries on its dedicated thread.
-            // Disable .gitignore respect — we're scanning disk usage, not source code.
-            let walker = ignore::WalkBuilder::new(&path_walk)
-                .ignore(false)
-                .build_parallel();
-            let folders_clone = folders_ref.clone();
+            // Wrap arena in Arc<Mutex> for shared access during parallel walk
             let arena_arc = Arc::new(std::sync::Mutex::new(arena));
-            let arena_clone = arena_arc.clone();
-            let cancel_clone = cancel_blocking.clone();
-            let root_path_clone = root_path.clone();
 
-            walker.run(|| {
-                let folders = folders_clone.clone();
-                let arena = arena_clone.clone();
-                let cancel = cancel_clone.clone();
-                let root_path = root_path_clone.clone();
+            // Debug counters
+            let counter_files = Arc::new(AtomicU64::new(0));
+            let counter_dirs = Arc::new(AtomicU64::new(0));
+            let counter_size = Arc::new(AtomicU64::new(0));
+            let counter_parent_found = Arc::new(AtomicU64::new(0));
+            let counter_parent_missing = Arc::new(AtomicU64::new(0));
+            let counter_errors = Arc::new(AtomicU64::new(0));
 
-                Box::new(move |entry: Result<ignore::DirEntry, ignore::Error>| {
-                    if cancel.load(Ordering::Relaxed) {
-                        return ignore::WalkState::Quit;
-                    }
-
-                    match entry {
-                        Ok(entry) => {
-                            let path = entry.path();
-
-                            match entry.file_type() {
-                                Some(ft) if ft.is_file() => {
-                                    // File — add size to parent folder
-                                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                                    let parent = path.parent().map(|p| normalize_path(p));
-
-                                    if let Some(parent_path) = parent {
-                                        let f = folders.lock().unwrap();
-                                        if let Some((_, accum)) = f.get(&parent_path) {
-                                            accum.size.fetch_add(size, Ordering::Relaxed);
-                                            accum.file_count.fetch_add(1, Ordering::Relaxed);
-                                        }
+            // Parallel walk with jwalk — parallel by default (Rayon internally)
+            jwalk::WalkDir::new(&path_walk)
+                .into_iter()
+                .for_each({
+                    let folders = folders.clone();
+                    let arena = arena_arc.clone();
+                    let root = root_path.clone();
+                    let cancel = cancel_blocking.clone();
+                    let c_files = counter_files.clone();
+                    let c_dirs = counter_dirs.clone();
+                    let c_size = counter_size.clone();
+                    let c_pf = counter_parent_found.clone();
+                    let c_pm = counter_parent_missing.clone();
+                    let c_err = counter_errors.clone();
+                    move |result: Result<jwalk::DirEntry<((), ())>, jwalk::Error>| {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        match result {
+                            Ok(ref e) => {
+                                let meta = match e.metadata() {
+                                    Ok(m) => m,
+                                    Err(_) => {
+                                        c_err.fetch_add(1, Ordering::Relaxed);
+                                        return;
                                     }
-                                }
-                                Some(ft) if ft.is_dir() => {
-                                    // Directory — record it. Parent linking happens in a post-walk pass
-                                    // because parallel traversal doesn't guarantee parent-first order.
-                                    // Skip the root directory — it was added before the walk.
-                                    let normalized = normalize_path(path);
-                                    if normalized == root_path {
-                                        return ignore::WalkState::Continue;
-                                    }
+                                };
+                                let entry_path = normalize_path(&e.path());
 
-                                    let name = path
+                                if meta.is_dir() {
+                                    // Skip root — already registered
+                                    if entry_path == root {
+                                        c_dirs.fetch_add(1, Ordering::Relaxed);
+                                        return;
+                                    }
+                                    // Register new directory in arena and folders map
+                                    let name = e.path()
                                         .file_name()
                                         .map(|n| n.to_string_lossy().to_string())
                                         .unwrap_or_default();
-
-                                    {
+                                    let node_id = {
                                         let mut a = arena.lock().unwrap();
-                                        let node_id = a.alloc_folder(&name);
-
-                                        // Record this folder — linking happens later
-                                        {
-                                            let mut f = folders.lock().unwrap();
-                                            f.insert(normalized, (node_id, FolderAccum::new()));
+                                        a.alloc_folder(&name)
+                                    };
+                                    {
+                                        let mut f = folders.lock().unwrap();
+                                        f.insert(entry_path, (node_id, FolderAccum::new()));
+                                    }
+                                    c_dirs.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    // File — accumulate to parent folder
+                                    let size = meta.len();
+                                    c_size.fetch_add(size, Ordering::Relaxed);
+                                    c_files.fetch_add(1, Ordering::Relaxed);
+                                    let parent = match e.path().parent().map(|p| normalize_path(p)) {
+                                        Some(p) => p,
+                                        None => {
+                                            c_pm.fetch_add(1, Ordering::Relaxed);
+                                            return;
                                         }
+                                    };
+                                    let f = folders.lock().unwrap();
+                                    if let Some((_, accum)) = f.get(&parent) {
+                                        accum.size.fetch_add(size, Ordering::Relaxed);
+                                        accum.file_count.fetch_add(1, Ordering::Relaxed);
+                                        c_pf.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        c_pm.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
-                                _ => {}
                             }
-
-                            ignore::WalkState::Continue
+                            Err(_) => {
+                                c_err.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
-                        Err(_) => ignore::WalkState::Continue, // Skip inaccessible entries
                     }
-                })
-            });
+                });
 
-            // Walk complete — collect results and emit events
-            // Drop the walk's arena reference before post-processing
-            drop(arena_clone);
-            drop(cancel_clone);
-            drop(folders_clone);
+            // Walk complete — debug stats
+            let walk_files = counter_files.load(Ordering::Relaxed);
+            let walk_dirs = counter_dirs.load(Ordering::Relaxed);
+            let walk_size = counter_size.load(Ordering::Relaxed);
+            let walk_pf = counter_parent_found.load(Ordering::Relaxed);
+            let walk_pm = counter_parent_missing.load(Ordering::Relaxed);
+            let walk_err = counter_errors.load(Ordering::Relaxed);
+            let gb = walk_size as f64 / 1024.0 / 1024.0 / 1024.0;
+            println!(
+                "[SCAN] jwalk: files={} dirs={} size={:.1}GB parent_found={} parent_missing={} errors={}",
+                walk_files, walk_dirs, gb, walk_pf, walk_pm, walk_err
+            );
 
-            // Post-walk: link parents and children using path relationships.
-            // Parallel traversal doesn't guarantee parent-first order, so we do this now.
-            // Collect parent-child pairs first, then apply to arena (avoids lock ordering issues).
-            let folders_map = folders_ref.lock().unwrap();
-
+            // Post-walk: link parents and children using path relationships
+            let folders_map = folders.lock().unwrap();
             let mut parent_child_pairs: Vec<(NodeId, NodeId)> = Vec::new();
-
             for (path, (node_id, _)) in folders_map.iter() {
                 if let Some(parent_path) = path.rsplit_once('/').map(|(p, _)| p) {
                     if let Some((parent_id, _)) = folders_map.get(parent_path) {
@@ -191,21 +200,22 @@ impl DiskUsageUseCase {
                     }
                 }
             }
+            let pairs_clone = parent_child_pairs.clone();
+            drop(folders_map);
 
             // Apply links to arena
             {
                 let mut arena = arena_arc.lock().unwrap();
-                for (parent_id, child_id) in &parent_child_pairs {
+                for (parent_id, child_id) in &pairs_clone {
                     arena.add_child(*parent_id, *child_id);
                 }
             }
 
-             // Take ownership of arena for frontend queries
+            // Take ownership of arena for frontend queries
             let arena = std::mem::replace(
                 &mut *arena_arc.lock().unwrap(),
                 FolderArena::new(),
             );
-
             let mut final_arena = arena;
             final_arena.freeze_structural();
 
@@ -216,13 +226,15 @@ impl DiskUsageUseCase {
                 tree_map.insert(scan_id_blocking.clone(), arena_for_tree.clone());
             }
 
-            // Get a clone of the structural Arc for the rollup phase.
-            // Clone the Arc (cheap refcount bump) so we don't hold the Mutex during rollup.
+            // Get structural data for rollup
             let structural = {
                 let guard = arena_for_tree.lock().unwrap();
                 let arc = guard.structural_ref().unwrap();
                 arc.clone()
             };
+
+            // Re-lock folders for rollup
+            let folders_map = folders.lock().unwrap();
 
             // Emit started event
             let _ = tx.send(ScanStep::Started(ScanTreeStarted {
@@ -232,14 +244,11 @@ impl DiskUsageUseCase {
                 root_name: root_name.clone(),
             }));
 
-            // Emit children_ready events for folders with children
-            // Count children per parent from the pairs we collected
-            let mut child_counts: std::collections::HashMap<NodeId, u32> =
-                std::collections::HashMap::new();
-            for (parent_id, _) in &parent_child_pairs {
+            // Emit children_ready events
+            let mut child_counts: HashMap<NodeId, u32> = HashMap::new();
+            for (parent_id, _) in &pairs_clone {
                 *child_counts.entry(*parent_id).or_insert(0) += 1;
             }
-
             for (parent_id, count) in child_counts {
                 let _ = tx.send(ScanStep::ChildrenReady(ScanTreeChildren {
                     scan_id: scan_id_blocking.clone(),
@@ -248,17 +257,10 @@ impl DiskUsageUseCase {
                 }));
             }
 
-            // Brief pause to let the frontend process children_ready events
-            // and fetch children via get_scan_tree_children before folder_usage arrives.
+            // Brief pause for frontend to process children_ready events
             std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // Bottom-up rollup: propagate children's stats to parents.
-            // The accumulators only have immediate files from the walk.
-            // We need to sum children's totals to get the final size per folder.
-            //
-            // Use the arena's structural data (first-child/next-sibling) for a proper
-            // bottom-up traversal via iterative DFS post-order.
-
+            // Bottom-up rollup: propagate children's stats to parents
             let mut rolled_size: HashMap<NodeId, u64> = HashMap::new();
             let mut rolled_files: HashMap<NodeId, u64> = HashMap::new();
             let mut rolled_folders: HashMap<NodeId, u64> = HashMap::new();
@@ -270,14 +272,11 @@ impl DiskUsageUseCase {
                 rolled_folders.insert(*node_id, 0);
             }
 
-            // Iterative post-order DFS: process children before parents.
-            // Use two stacks: one for traversal order, one for post-order processing.
+            // Iterative post-order DFS
             let mut traversal = vec![root_id];
             let mut post_order = Vec::new();
-
             while let Some(node_id) = traversal.pop() {
                 post_order.push(node_id);
-                // Push children in reverse order so they're processed left-to-right
                 let mut child = structural.first_child[node_id.0 as usize];
                 while let Some(c) = child {
                     traversal.push(c);
@@ -287,12 +286,10 @@ impl DiskUsageUseCase {
 
             // Process in reverse traversal order (children before parents)
             for node_id in post_order.into_iter().rev() {
-                // Add this node's rolled-up stats to its parent
                 if let Some(&Some(parent_id)) = structural.parent.get(node_id.0 as usize) {
                     let size = *rolled_size.get(&node_id).unwrap_or(&0);
                     let files = *rolled_files.get(&node_id).unwrap_or(&0);
                     let folders = *rolled_folders.get(&node_id).unwrap_or(&0);
-
                     *rolled_size.entry(parent_id).or_insert(0) += size;
                     *rolled_files.entry(parent_id).or_insert(0) += files;
                     *rolled_folders.entry(parent_id).or_insert(0) += 1 + folders;
@@ -309,12 +306,19 @@ impl DiskUsageUseCase {
                 }));
             }
 
+            drop(folders_map);
+
             if cancel_blocking.load(Ordering::Relaxed) {
                 let _ = tx.send(ScanStep::Cancelled);
                 return;
             }
 
-            let _ = tx.send(ScanStep::Complete);
+            let _ = tx.send(ScanStep::Complete {
+                scan_id: scan_id_blocking.clone(),
+                total_files: 0,
+                total_size: 0,
+                folder_count: 0,
+            });
         });
 
         let start_clone = start.clone();
@@ -353,11 +357,16 @@ impl DiskUsageUseCase {
                             },
                         );
                     }
-                    ScanStep::Complete => {
+                    ScanStep::Complete {
+                        scan_id,
+                        total_files: _,
+                        total_size: _,
+                        folder_count: _,
+                    } => {
                         let _ = window.emit(
                             "scan:progress",
                             ScanProgress {
-                                scan_id: scan_id_clone.clone(),
+                                scan_id,
                                 percentage: 100.0,
                                 message: format!(
                                     "Scanned {} files across {} folders",

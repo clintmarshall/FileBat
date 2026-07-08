@@ -25,31 +25,23 @@ If you are a new Claude Code session launched after a context handoff:
 
 ### Where We Left Off
 
-**E2E scan assertions implemented and passing.**
+**Bottom-up rollup implemented, committed, and verified in real app.**
 
-1. **E2E test improvements:**
-   - Scan completes in <10s (5.98s for E:\projects)
-   - UI updates during scan (polls every 500ms)
-   - First 20 rows have complete data (size + files + folders)
-   - Fallback completion detection via progress bar
+1. **Rollup implementation:**
+   - Post-order DFS propagates children's stats to parents
+   - Each folder now shows total subtree size/file/folder counts
+   - Fixed borrow-of-moved-value bug (clone Arc<StructuralData> early)
+   - Commit: `bcaf950` — "Bottom-up rollup for ignore walker + fix borrow-of-moved-value"
 
-2. **Root stats fix:**
-   - `scan:complete` handler applies root stats from summary if chunk events haven't flushed
-   - Fixes rAF flush race condition
+2. **Tests:** 125 frontend + 67 Rust all pass
 
-3. **All tests pass:** 125 frontend, 67 Rust, E2E green
+3. **Verified in real app:** E:\projects scan — 609K items, 71.6 GB, 1.4s. All folders show correct subtree sizes. Zero console errors.
 
 ### What to Do Next
 
-**Primary action — merge PR #3:**
-```bash
-unset GH_TOKEN && gh pr merge 3 --squash
-```
-Note: Permission classifier may block this — user needs to approve.
-
-**Secondary:**
-- Consider making `ignore` the default implementation (100x faster)
-- Tree drilldown polish if needed
+1. **Merge PR #3** — `unset GH_TOKEN && gh pr merge 3 --squash` (may need user approval)
+2. **Clean up** — unused `FolderAccum.folder_count` field, stale feature docs
+3. **Tree drilldown polish** — any remaining UX issues
 
 ### Behavior Rules
 
@@ -71,6 +63,7 @@ Note: Permission classifier may block this — user needs to approve.
 | `sessions/SESSION-RESUME.md` | This file — resume brief |
 | `playwright.tauri.cjs` | E2E tests |
 | `src/app.ts` | Frontend application |
+| `src-tauri/src/usecases/analytics/disk_usage_ignore.rs` | Ignore walker implementation |
 | `architecture.md` | Living architecture document |
 
 ---

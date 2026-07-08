@@ -18,10 +18,10 @@ The original two-phase scan (BFS discovery + parallel sizing) was slow:
 - Internal work-stealing thread pool — no manual thread management
 - `.ignore(false)` — we're scanning disk usage, not source code
 
-**2. Feature-gated behind `ignore-walker`**
-- `cargo build` — original implementation (default)
-- `cargo build --features ignore-walker` — new implementation
-- Toggle in `mod.rs` via `#[cfg(feature = "ignore-walker")]`
+**2. Feature-gated behind `ignore-walker` (REMOVED)**
+- ~~`cargo build` — original implementation (default)~~
+- ~~`cargo build --features ignore-walker` — new implementation~~
+- The feature flag was removed — jwalk is always-on. `ignore` crate remains in Cargo.toml but the cfg-gate in mod.rs was removed.
 
 **3. Post-walk parent linking**
 - Parallel traversal doesn't guarantee parent-first order
