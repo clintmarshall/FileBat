@@ -55,3 +55,35 @@ Because transferring massive file trees across the Tauri IPC (Inter-Process Comm
 * **BLAKE3 Duplicate Hashing:** Leverage the `blake3` crate. It is exceptionally fast and can hash files at disk-speed limits to find duplicate content instantly.
 * **Cross-Drive Virtual File Systems:** Use Rust structs to create "virtual symlinks" so users can organize scattered files without modifying the actual disk structure.
 * **Low-Level Metadata Extraction:** Use platform-specific crates (like `winapi` for Windows or `nix` for Unix) to grab deep file attributes, security descriptors, and hard link counts that standard tools miss.
+
+## Refactoring Task: Break Down Large app.ts File
+
+### Objective
+
+The current `app.ts` file is 1200 lines long and handles too many responsibilities. Refactor this file into a modular, scalable TypeScript project structure following Clean Architecture principles.
+
+### Target Project Structure
+
+Create the following directory structure inside the `src/` folder:
+
+* `src/routes/` – API route definitions and endpoint mappings.
+* `src/controllers/` – HTTP request handlers (handles req, res, and status codes).
+* `src/services/` – Core business logic and data processing rules.
+* `src/models/` – Database schemas, types, and TypeScript interfaces.
+* `src/middlewares/` – Authentication, validation, logging, and error handlers.
+* `src/utils/` – Pure helper functions and configuration utilities.
+
+### Refactoring Guidelines
+
+1. **Keep app.ts Lean:** The final `app.ts` should only initialize Express, apply global middleware, register top-level routes, and export or start the server.
+2. **Decouple Logic:** Controllers must not write directly to the database; they must call Services. Services must not handle HTTP `req` or `res` objects.
+3. **Preserve Functionality:** Do not alter the existing runtime logic, variable names, database queries, or API endpoints. Only move them to their appropriate modules.
+4. **Type Safety:** Ensure all extracted modules maintain strict TypeScript types and explicit imports/exports.
+
+### Output Requirements
+
+Provide the refactored code step-by-step:
+
+1. List the files to be created.
+2. Provide the complete code for each new module.
+3. Provide the final, slimmed-down version of `app.ts`.

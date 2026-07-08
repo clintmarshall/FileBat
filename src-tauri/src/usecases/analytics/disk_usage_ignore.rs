@@ -54,7 +54,7 @@ pub struct DiskUsageUseCase;
 
 impl DiskUsageUseCase {
     /// Single-pass scan using `ignore::WalkParallel`.
-    pub fn run(
+    pub async fn run(
         window: tauri::WebviewWindow,
         path: String,
         _max_depth: u32,
@@ -62,7 +62,7 @@ impl DiskUsageUseCase {
         start: Instant,
         scan_id: String,
         tree: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<FolderArena>>>>>,
-    ) -> impl std::future::Future<Output = ()> {
+    ) {
         let (done_tx, done_rx) = oneshot::channel();
         let (tx, mut rx) = mpsc::unbounded_channel::<ScanStep>();
 
@@ -336,7 +336,7 @@ impl DiskUsageUseCase {
             let _ = done_tx.send(());
         });
 
-        async { let _ = done_rx.await; }
+        let _ = done_rx.await;
     }
 }
 
