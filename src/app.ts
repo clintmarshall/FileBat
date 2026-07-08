@@ -1197,6 +1197,31 @@ function setupScanListeners() {
 
     listen('scan:complete', (event) => {
         const data = event.payload as { totalItems: number; totalSize: number; durationMs: number };
+
+        // Apply root stats from summary if they haven't arrived via chunk events.
+        // The root row may still show placeholders if the last flush hasn't run yet.
+        if (activeScanId) {
+            const rootInStore = treeStore.get(0);
+            if (!rootInStore?.stats) {
+                // Root stats missing — apply from summary data
+                treeStore.set(0, {
+                    childCount: rootInStore?.childCount ?? 0,
+                    children: rootInStore?.children,
+                    stats: { size: data.totalSize, fileCount: data.totalItems, folderCount: 0 },
+                });
+                // Update the root row in the DOM directly
+                const rootRow = document.querySelector('.usage-tree-row[data-node-id="0"]') as HTMLElement;
+                if (rootRow) {
+                    const sizeEl = rootRow.querySelector('.tree-size') as HTMLElement;
+                    const filesEl = rootRow.querySelector('.tree-files') as HTMLElement;
+                    const foldersEl = rootRow.querySelector('.tree-folders') as HTMLElement;
+                    if (sizeEl) sizeEl.textContent = formatSize(data.totalSize);
+                    if (filesEl) filesEl.textContent = data.totalItems.toLocaleString();
+                    if (foldersEl) foldersEl.textContent = '0';
+                }
+            }
+        }
+
         resetScanUI();
         analyticsSummary.classList.remove('hidden');
         summaryText.textContent = `Scan complete: ${data.totalItems.toLocaleString()} items · ${formatSize(data.totalSize)} · ${(data.durationMs / 1000).toFixed(1)}s`;

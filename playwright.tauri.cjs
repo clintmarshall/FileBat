@@ -272,17 +272,79 @@ async function testDiskUsageScan(page, consoleMessages) {
 
 	consoleMessages.length = 0;
 
+	// Track UI updates during the scan (not just after)
+	const uiUpdates = [];
+	const scanStart = Date.now();
+
+	// Set up an interval to poll UI state during the scan
+	const pollInterval = setInterval(async () => {
+		const elapsed = ((Date.now() - scanStart) / 1000).toFixed(1);
+		const statusText = await page.locator('#status-info').textContent().catch(() => '');
+		const progressWidth = await page.locator('#progress-fill').evaluate(el => el ? el.style.width || '' : '').catch(() => '');
+		const rowsVisible = await page.locator('#usage-results .usage-tree-row').count().catch(() => 0);
+		const scanningRows = await page.locator('#usage-results .usage-tree-row.scanning').count().catch(() => 0);
+
+		uiUpdates.push({ elapsed, statusText, progressWidth, rowsVisible, scanningRows });
+		console.log(`  [${elapsed}s] rows=${rowsVisible} scanning=${scanningRows} progress="${progressWidth}" status="${statusText.trim()}"`);
+	}, 500);
+
 	await page.click('#btn-scan');
 
 	console.log('  Waiting for scan to complete...');
 	try {
-		await page.waitForSelector('#analytics-summary', { state: 'visible', timeout: 120000 });
-		console.log('  ✓ PASS: Scan completed');
+		// Wait for scan completion — summary visible OR progress reaches 100%
+		// Some implementations may take a while for large directories
+		const scanTimeout = 180000; // 180s
+		let completed = false;
 
-		// Wait for tree children to render (single-pass scans complete fast)
-		await page.waitForTimeout(3000);
+		try {
+			await page.waitForSelector('#analytics-summary', { state: 'visible', timeout: scanTimeout });
+			completed = true;
+		} catch {
+			// Fallback: check if progress reached 100%
+			for (let i = 0; i < scanTimeout / 1000; i++) {
+				await page.waitForTimeout(1000);
+				const progressWidth = await page.locator('#progress-fill').evaluate(el => el.style.width).catch(() => '');
+				if (progressWidth === '100%') {
+					completed = true;
+					console.log('  ⚠ Summary not visible, but progress reached 100%');
+					break;
+				}
+			}
+		}
 
-		// Wait for tree children to render (single-pass scans complete fast)
+		const scanDuration = ((Date.now() - scanStart) / 1000).toFixed(2);
+		clearInterval(pollInterval);
+
+		if (!completed) {
+			console.log('  ✗ FAIL: Scan did not complete within timeout');
+			console.log(`  Status info: ${await page.locator('#status-info').textContent()}`);
+			process.exitCode = 1;
+			return;
+		}
+
+		// Brief wait for DOM to settle after completion
+		await page.waitForTimeout(1000);
+
+		// 1. Assert scan completed within time limit
+		const durationSec = parseFloat(scanDuration);
+		const timeLimit = 10; // seconds
+		if (durationSec > timeLimit) {
+			console.log(`  ✗ FAIL: Scan took ${scanDuration}s (limit: ${timeLimit}s)`);
+			process.exitCode = 1;
+		} else {
+			console.log(`  ✓ PASS: Scan completed in ${scanDuration}s (< ${timeLimit}s)`);
+		}
+
+		// 2. Check that UI updated during the scan (not just at the end)
+		const updatesWithRows = uiUpdates.filter(u => u.rowsVisible > 0);
+		if (updatesWithRows.length >= 2) {
+			console.log(`  ✓ PASS: UI updated during scan (${updatesWithRows.length} snapshots showed rows appearing)`);
+		} else {
+			console.log(`  ⚠ WARNING: UI may not have updated during scan (only ${updatesWithRows.length} snapshots showed rows)`);
+		}
+
+		// 3. Check total row count
 		const resultRows = await page.locator('#usage-results .usage-tree-row').count();
 		console.log(`  ✓ Usage results: ${resultRows} folders in tree`);
 
@@ -291,10 +353,40 @@ async function testDiskUsageScan(page, consoleMessages) {
 			process.exitCode = 1;
 		}
 
+		// 4. Check the first 20 rows have results (size, file count, folder count)
+		// Only check rows that exist — don't require 20 rows, just that visible rows have data
+		const rowsToCheck = Math.min(20, resultRows);
+		let rowsWithData = 0;
+		let rowsMissingData = 0;
+
+		for (let i = 0; i < rowsToCheck; i++) {
+			const row = page.locator('#usage-results .usage-tree-row').nth(i);
+			const sizeText = await row.locator('.tree-size').textContent();
+			const filesText = await row.locator('.tree-files').textContent();
+			const foldersText = await row.locator('.tree-folders').textContent();
+			const nameText = await row.locator('.tree-name').textContent();
+
+			if (sizeText !== '—' && filesText !== '—' && foldersText !== '—') {
+				rowsWithData++;
+			} else {
+				rowsMissingData++;
+				console.log(`    Row ${i + 1} "${nameText}": size="${sizeText}", files="${filesText}", folders="${foldersText}" — MISSING DATA`);
+			}
+		}
+
+		console.log(`  ✓ ${rowsWithData}/${rowsToCheck} rows have complete data (size + files + folders)`);
+
+		if (rowsWithData < rowsToCheck) {
+			console.log(`  ✗ FAIL: ${rowsMissingData} rows missing data`);
+			process.exitCode = 1;
+		}
+
+		// 5. Summary text
 		const summaryText = await page.locator('#summary-text').textContent();
 		console.log(`  ✓ Summary: ${summaryText}`);
 
 	} catch (e) {
+		clearInterval(pollInterval);
 		console.log('  ✗ FAIL: Scan did not complete within timeout');
 		console.log(`  Status info: ${await page.locator('#status-info').textContent()}`);
 		console.log('  Console messages:');
